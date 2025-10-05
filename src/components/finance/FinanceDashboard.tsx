@@ -1,5 +1,4 @@
-﻿import { useState, useEffect } from 'react'
-import { TrendingUp, DollarSign, Wallet, CreditCard, PiggyBank } from 'lucide-react'
+﻿import { TrendingUp, DollarSign, Wallet, CreditCard, PiggyBank } from 'lucide-react'
 
 const FinanceDashboard = () => {
   const formatCurrency = (amount: number) => {
