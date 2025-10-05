@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react'
 import { supabase } from './lib/supabase'
 
 type Area = 'Full Stack' | 'S4' | '808' | 'Personal' | 'Huge Capital' | 'Golf' | 'Health'
-type EffortLevel = '$$$ MoneyMaker' | '$ Lil Money' | '-$ Save Dat Money' | ':( Pointless' | '8) JusVibin'
+type EffortLevel = '$$$ MoneyMaker' | '$ Lil Money' | '$$ Some Money' | '$$$ Big Money' | '$$$$ Huge Money' | '-$ Save Dat Money' | ':( Pointless' | '8) JusVibin'
 type Priority = 'Low' | 'Medium' | 'High'
 type RecurringType = 'none' | 'daily' | 'daily_weekdays' | 'weekly' | 'monthly' | 'custom'
 
@@ -51,7 +51,6 @@ function App() {
   const [showDatePicker, setShowDatePicker] = useState(false)
   const [datePickerTask, setDatePickerTask] = useState<Task | null>(null)
   const [selectedStatusFilter, setSelectedStatusFilter] = useState<'all' | 'active' | 'completed' | 'recurring' | 'overdue' | 'dueToday' | 'completedToday' | 'dueTomorrow'>('all')
-  const [editingField, setEditingField] = useState<{ taskId: string, field: string } | null>(null)
   const [dwSessionTask, setDwSessionTask] = useState<Task | null>(null)
   const [dwSessionTaskType, setDwSessionTaskType] = useState<string>('')
   const [dwSessionFocusArea, setDwSessionFocusArea] = useState<Area | ''>('')
@@ -427,7 +426,7 @@ function App() {
         filteredTasks = filteredTasks.filter(t => t.status === 'Done')
         break
       case 'recurring':
-        filteredTasks = filteredTasks.filter(t => t.recurring_type !== null && t.recurring_type !== '' && t.recurring_type !== 'None')
+        filteredTasks = filteredTasks.filter(t => t.recurring_type !== undefined && t.recurring_type !== null && t.recurring_type !== 'none')
         break
       case 'overdue':
         filteredTasks = filteredTasks.filter(t => isOverdue(t.due_date) && t.status !== 'Done')
@@ -447,7 +446,7 @@ function App() {
   const stats = {
     active: tasks.filter(t => t.status !== 'Done').length,
     completed: tasks.filter(t => t.status === 'Done').length,
-    recurring: tasks.filter(t => t.recurring_type !== null && t.recurring_type !== '' && t.recurring_type !== 'None').length,
+    recurring: tasks.filter(t => t.recurring_type !== undefined && t.recurring_type !== null && t.recurring_type !== 'none').length,
     overdue: tasks.filter(t => isOverdue(t.due_date) && t.status !== 'Done').length,
     dueToday: tasks.filter(t => isToday(t.due_date) && t.status !== 'Done').length,
     completedToday: tasks.filter(t => t.status === 'Done' && t.updated_at && isToday(t.updated_at)).length,
@@ -2818,7 +2817,7 @@ function App() {
                         name="priority"
                         value={level}
                         checked={(taskFormData.priority || editingTask?.priority) === level}
-                        onChange={(e) => setTaskFormData({ ...taskFormData, priority: e.target.value })}
+                        onChange={(e) => setTaskFormData({ ...taskFormData, priority: e.target.value as Priority })}
                         style={{ cursor: 'pointer' }}
                       />
                       <span style={{ fontSize: '14px' }}>{level}</span>
@@ -2830,7 +2829,7 @@ function App() {
                 <label style={{ color: '#9ca3af', display: 'block', marginBottom: '8px', fontSize: '14px' }}>Money Maker</label>
                 <select
                   value={taskFormData.effort_level || (editingTask?.effort_level || '')}
-                  onChange={(e) => setTaskFormData({ ...taskFormData, effort_level: e.target.value })}
+                  onChange={(e) => setTaskFormData({ ...taskFormData, effort_level: e.target.value as EffortLevel })}
                   style={{
                     width: '100%',
                     padding: '10px 12px',

@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { supabase } from '../lib/supabase'
-import {
+import type {
   ContentItem,
   ContentSource,
   ContentCategory,
@@ -14,7 +14,6 @@ import {
   Filter,
   Star,
   Trash2,
-  Edit2,
   ExternalLink,
   BookmarkPlus,
   FolderOpen,
@@ -26,8 +25,6 @@ import {
   Archive,
   TrendingUp,
   X,
-  ChevronDown,
-  ChevronRight,
 } from 'lucide-react'
 
 const ContentLibrary = () => {
@@ -39,10 +36,8 @@ const ContentLibrary = () => {
   const [showFilters, setShowFilters] = useState(false)
   const [selectedContent, setSelectedContent] = useState<ContentItem | null>(null)
   const [showDetailsModal, setShowDetailsModal] = useState(false)
-  const [viewMode, setViewMode] = useState<'grid' | 'list'>('list')
   const [sortBy, setSortBy] = useState<'saved_at' | 'priority' | 'title' | 'status'>('saved_at')
   const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('desc')
-  const [expandedFolders, setExpandedFolders] = useState<string[]>([])
 
   const [filters, setFilters] = useState<ContentFilter>({
     source: [],
@@ -310,8 +305,6 @@ const ContentLibrary = () => {
     }
   }
 
-  const allTags = Array.from(new Set(contents.flatMap((c) => c.tags)))
-  const allFolders = Array.from(new Set(contents.filter((c) => c.folder).map((c) => c.folder!)))
 
   // Stats
   const stats = {

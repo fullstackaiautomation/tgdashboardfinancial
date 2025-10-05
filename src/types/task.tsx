@@ -16,7 +16,7 @@ export type TaskStatus = 'Not started' | 'In progress' | 'Done'
 
 export type Priority = 'Low' | 'Medium' | 'High'
 
-export type EffortLevel = '$$$ MoneyMaker' | '$ Lil Money' | '-$ Save Dat Money' | ':( Pointless' | '8) JusVibin'
+export type EffortLevel = '$$$ MoneyMaker' | '$ Lil Money' | '$$ Some Money' | '$$$ Big Money' | '$$$$ Huge Money' | '-$ Save Dat Money' | ':( Pointless' | '8) JusVibin'
 
 export type Automation = 'Automate' | 'Manual' | 'Delegate'
 

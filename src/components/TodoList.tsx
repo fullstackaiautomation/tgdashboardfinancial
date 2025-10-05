@@ -1,13 +1,12 @@
 import { useState, useEffect, useMemo } from 'react'
 import { Plus, Check, Trash2, Calendar as CalendarIcon } from 'lucide-react'
 import { supabase } from '../lib/supabase'
-import type { Task, Area } from '../types/task'
+import type { Task, Area, Priority, EffortLevel, RecurringType } from '../types/task'
 import { format, isToday, isTomorrow, isAfter } from 'date-fns'
 
 const TodoList = () => {
   const [tasks, setTasks] = useState<Task[]>([])
   const [loading, setLoading] = useState(true)
-  const [newTodoText, setNewTodoText] = useState('')
   const [selectedArea, setSelectedArea] = useState<Area | 'All Areas'>('All Areas')
   const [filter, setFilter] = useState<'all' | 'active' | 'completed' | 'today' | 'overdue' | 'recurring' | 'completedToday' | 'tomorrow'>('all')
   const [userId, setUserId] = useState<string | null>(null)
@@ -218,7 +217,7 @@ const TodoList = () => {
       priority: 'Medium',
       effort_level: '$ Lil Money',
       due_date: null,
-      recurring_type: 'None',
+      recurring_type: 'none',
       hours_projected: 0,
       hours_worked: 0,
       checklist: []
@@ -612,7 +611,7 @@ const TodoList = () => {
                 <label className="block text-sm font-medium text-gray-300 mb-2">Priority</label>
                 <select
                   value={editFormData.priority || 'Medium'}
-                  onChange={(e) => setEditFormData({...editFormData, priority: e.target.value})}
+                  onChange={(e) => setEditFormData({...editFormData, priority: e.target.value as Priority})}
                   className="w-full px-3 py-2 bg-gray-800 text-white border border-gray-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
                 >
                   <option value="Low">Low</option>
@@ -624,7 +623,7 @@ const TodoList = () => {
                 <label className="block text-sm font-medium text-gray-300 mb-2">Money Maker</label>
                 <select
                   value={editFormData.effort_level || '$ Lil Money'}
-                  onChange={(e) => setEditFormData({...editFormData, effort_level: e.target.value})}
+                  onChange={(e) => setEditFormData({...editFormData, effort_level: e.target.value as EffortLevel})}
                   className="w-full px-3 py-2 bg-gray-800 text-white border border-gray-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
                 >
                   <option value="$ Lil Money">$ Lil Money</option>
@@ -672,14 +671,14 @@ const TodoList = () => {
             <div className="mb-6">
               <label className="block text-sm font-medium text-gray-300 mb-2">Recurring</label>
               <select
-                value={editFormData.recurring_type || 'None'}
-                onChange={(e) => setEditFormData({...editFormData, recurring_type: e.target.value})}
+                value={editFormData.recurring_type || 'none'}
+                onChange={(e) => setEditFormData({...editFormData, recurring_type: e.target.value as RecurringType})}
                 className="w-full px-3 py-2 bg-gray-800 text-white border border-gray-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
               >
-                <option value="None">None</option>
-                <option value="Daily">Daily</option>
-                <option value="Weekly">Weekly</option>
-                <option value="Monthly">Monthly</option>
+                <option value="none">None</option>
+                <option value="daily">Daily</option>
+                <option value="weekly">Weekly</option>
+                <option value="monthly">Monthly</option>
               </select>
             </div>
 
