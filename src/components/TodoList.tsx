@@ -11,6 +11,14 @@ const TodoList = () => {
   const [selectedArea, setSelectedArea] = useState<Area | 'All Areas'>('All Areas')
   const [filter, setFilter] = useState<'all' | 'active' | 'completed' | 'today' | 'overdue' | 'recurring' | 'completedToday' | 'tomorrow'>('all')
   const [userId, setUserId] = useState<string | null>(null)
+  const [editingTask, setEditingTask] = useState<Task | null>(null)
+  const [showAddModal, setShowAddModal] = useState(false)
+  const [editFormData, setEditFormData] = useState<Partial<Task>>({})
+
+  // Debug: Log when filter changes
+  useEffect(() => {
+    console.log('Filter changed to:', filter)
+  }, [filter])
 
   // Get current user
   useEffect(() => {
@@ -148,8 +156,111 @@ const TodoList = () => {
     }
   }
 
+  const updateTask = async () => {
+    if (!editingTask) return
+
+    try {
+      const { error } = await supabase
+        .from('TG To Do List')
+        .update({
+          task_name: editFormData.task_name || editingTask.task_name,
+          description: editFormData.description || editingTask.description,
+          area: editFormData.area || editingTask.area,
+          task_type: editFormData.task_type || editingTask.task_type,
+          priority: editFormData.priority || editingTask.priority,
+          effort_level: editFormData.effort_level || editingTask.effort_level,
+          due_date: editFormData.due_date ? new Date(editFormData.due_date).toISOString() : editingTask.due_date?.toISOString(),
+          recurring_type: editFormData.recurring_type || editingTask.recurring_type,
+          'Hours Projected': editFormData.hours_projected ?? editingTask.hours_projected,
+          'Hours Worked': editFormData.hours_worked ?? editingTask.hours_worked,
+          checklist: editFormData.checklist ? JSON.stringify(editFormData.checklist) : JSON.stringify(editingTask.checklist || [])
+        })
+        .eq('id', editingTask.id)
+
+      if (error) throw error
+
+      await fetchTasks()
+      setEditingTask(null)
+      setEditFormData({})
+    } catch (error) {
+      console.error('Error updating task:', error)
+    }
+  }
+
+  const createTask = async () => {
+    if (!userId || !editFormData.task_name) return
+
+    try {
+      const { error } = await supabase
+        .from('TG To Do List')
+        .insert({
+          task_name: editFormData.task_name,
+          description: editFormData.description || '',
+          area: editFormData.area || 'Personal',
+          task_type: editFormData.task_type || '',
+          status: 'Not started',
+          automation: 'Manual',
+          priority: editFormData.priority || 'Medium',
+          effort_level: editFormData.effort_level || '$ Lil Money',
+          due_date: editFormData.due_date ? new Date(editFormData.due_date).toISOString() : null,
+          user_id: userId,
+          recurring_type: editFormData.recurring_type || 'None',
+          recurring_interval: 1,
+          is_recurring_template: false,
+          'Hours Projected': editFormData.hours_projected || 0,
+          'Hours Worked': editFormData.hours_worked || 0,
+          checklist: editFormData.checklist ? JSON.stringify(editFormData.checklist) : JSON.stringify([])
+        })
+
+      if (error) throw error
+
+      await fetchTasks()
+      setShowAddModal(false)
+      setEditFormData({})
+    } catch (error) {
+      console.error('Error creating task:', error)
+    }
+  }
+
+  const openEditModal = (task: Task) => {
+    console.log('Opening edit modal for task:', task.task_name)
+    setEditingTask(task)
+    setEditFormData({
+      task_name: task.task_name,
+      description: task.description,
+      area: task.area,
+      task_type: task.task_type,
+      priority: task.priority,
+      effort_level: task.effort_level,
+      due_date: task.due_date,
+      recurring_type: task.recurring_type,
+      hours_projected: task.hours_projected,
+      hours_worked: task.hours_worked,
+      checklist: task.checklist || []
+    })
+  }
+
+  const openAddModal = () => {
+    console.log('Opening add modal')
+    setShowAddModal(true)
+    setEditFormData({
+      task_name: '',
+      description: '',
+      area: 'Personal',
+      task_type: '',
+      priority: 'Medium',
+      effort_level: '$ Lil Money',
+      due_date: null,
+      recurring_type: 'None',
+      hours_projected: 0,
+      hours_worked: 0,
+      checklist: []
+    })
+  }
+
   // Filter tasks
   const filteredTasks = useMemo(() => {
+    console.log('Filtering with:', { filter, selectedArea, totalTasks: tasks.length })
     let filtered = tasks
 
     // Filter by area
@@ -198,6 +309,7 @@ const TodoList = () => {
         break
     }
 
+    console.log('Filtered tasks:', filtered.length)
     return filtered
   }, [tasks, selectedArea, filter])
 
@@ -366,23 +478,13 @@ const TodoList = () => {
 
       {/* Add New Todo */}
       <div className="bg-white rounded-lg shadow-sm p-6 border border-gray-200">
-        <div className="flex gap-3">
-          <input
-            type="text"
-            value={newTodoText}
-            onChange={(e) => setNewTodoText(e.target.value)}
-            onKeyPress={(e) => e.key === 'Enter' && addTodo()}
-            placeholder="Add a new task..."
-            className="flex-1 px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-          />
-          <button
-            onClick={addTodo}
-            className="px-6 py-3 bg-gradient-to-r from-blue-600 to-purple-600 text-white rounded-lg font-medium hover:from-blue-700 hover:to-purple-700 transition-all flex items-center gap-2"
-          >
-            <Plus className="w-5 h-5" />
-            Add Task
-          </button>
-        </div>
+        <button
+          onClick={openAddModal}
+          className="w-full px-6 py-3 bg-gradient-to-r from-blue-600 to-purple-600 text-white rounded-lg font-medium hover:from-blue-700 hover:to-purple-700 transition-all flex items-center justify-center gap-2"
+        >
+          <Plus className="w-5 h-5" />
+          Add New Task
+        </button>
       </div>
 
       {/* Todo List */}
@@ -395,12 +497,16 @@ const TodoList = () => {
           filteredTasks.map((task) => (
             <div
               key={task.id}
-              className={`rounded-lg shadow-sm p-4 border-l-4 border-y border-r border-gray-200 hover:shadow-md transition-all group ${getPriorityColor(task.priority)}`}
+              onDoubleClick={() => openEditModal(task)}
+              className={`rounded-lg shadow-sm p-4 border-l-4 border-y border-r border-gray-200 hover:shadow-md transition-all group cursor-pointer ${getPriorityColor(task.priority)}`}
             >
               <div className="flex items-start gap-4">
                 {/* Checkbox */}
                 <button
-                  onClick={() => toggleTodo(task.id, task.status)}
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    toggleTodo(task.id, task.status)
+                  }}
                   className={`mt-1 w-6 h-6 rounded-md border-2 flex items-center justify-center transition-all flex-shrink-0 ${
                     task.status === 'Done'
                       ? 'bg-green-500 border-green-500'
@@ -447,7 +553,10 @@ const TodoList = () => {
 
                 {/* Actions */}
                 <button
-                  onClick={() => deleteTodo(task.id)}
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    deleteTodo(task.id)
+                  }}
                   className="p-2 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors opacity-0 group-hover:opacity-100"
                 >
                   <Trash2 className="w-4 h-4" />
@@ -457,6 +566,184 @@ const TodoList = () => {
           ))
         )}
       </div>
+
+      {/* Edit/Add Task Modal */}
+      {(editingTask || showAddModal) && (
+        <div
+          className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50"
+          onClick={() => {
+            setEditingTask(null)
+            setShowAddModal(false)
+            setEditFormData({})
+          }}
+        >
+          <div
+            className="bg-gray-900 rounded-xl p-6 w-full max-w-lg max-h-[90vh] overflow-y-auto"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h3 className="text-xl font-bold text-white mb-6">
+              {editingTask ? 'Edit Task' : 'Create New Task'}
+            </h3>
+
+            {/* Task Name */}
+            <div className="mb-4">
+              <label className="block text-sm font-medium text-gray-300 mb-2">Task Name</label>
+              <input
+                type="text"
+                value={editFormData.task_name || ''}
+                onChange={(e) => setEditFormData({...editFormData, task_name: e.target.value})}
+                className="w-full px-3 py-2 bg-gray-800 text-white border border-gray-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                placeholder="Enter task name..."
+              />
+            </div>
+
+            {/* Description */}
+            <div className="mb-4">
+              <label className="block text-sm font-medium text-gray-300 mb-2">Description</label>
+              <textarea
+                value={editFormData.description || ''}
+                onChange={(e) => setEditFormData({...editFormData, description: e.target.value})}
+                className="w-full px-3 py-2 bg-gray-800 text-white border border-gray-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                rows={3}
+                placeholder="Task description..."
+              />
+            </div>
+
+            {/* Area and Type */}
+            <div className="grid grid-cols-2 gap-4 mb-4">
+              <div>
+                <label className="block text-sm font-medium text-gray-300 mb-2">Area</label>
+                <select
+                  value={editFormData.area || 'Personal'}
+                  onChange={(e) => setEditFormData({...editFormData, area: e.target.value as Area})}
+                  className="w-full px-3 py-2 bg-gray-800 text-white border border-gray-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                >
+                  <option value="Personal">Personal</option>
+                  <option value="Full Stack">Full Stack</option>
+                  <option value="Huge Capital">Huge Capital</option>
+                  <option value="S4">S4</option>
+                  <option value="808">808</option>
+                  <option value="Golf">Golf</option>
+                  <option value="Health">Health</option>
+                </select>
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-300 mb-2">Type</label>
+                <input
+                  type="text"
+                  value={editFormData.task_type || ''}
+                  onChange={(e) => setEditFormData({...editFormData, task_type: e.target.value})}
+                  className="w-full px-3 py-2 bg-gray-800 text-white border border-gray-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  placeholder="Select type..."
+                />
+              </div>
+            </div>
+
+            {/* Priority and Money Maker */}
+            <div className="grid grid-cols-2 gap-4 mb-4">
+              <div>
+                <label className="block text-sm font-medium text-gray-300 mb-2">Priority</label>
+                <select
+                  value={editFormData.priority || 'Medium'}
+                  onChange={(e) => setEditFormData({...editFormData, priority: e.target.value})}
+                  className="w-full px-3 py-2 bg-gray-800 text-white border border-gray-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                >
+                  <option value="Low">Low</option>
+                  <option value="Medium">Medium</option>
+                  <option value="High">High</option>
+                </select>
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-300 mb-2">Money Maker</label>
+                <select
+                  value={editFormData.effort_level || '$ Lil Money'}
+                  onChange={(e) => setEditFormData({...editFormData, effort_level: e.target.value})}
+                  className="w-full px-3 py-2 bg-gray-800 text-white border border-gray-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                >
+                  <option value="$ Lil Money">$ Lil Money</option>
+                  <option value="$$ Some Money">$$ Some Money</option>
+                  <option value="$$$ Big Money">$$$ Big Money</option>
+                  <option value="$$$$ Huge Money">$$$$ Huge Money</option>
+                </select>
+              </div>
+            </div>
+
+            {/* Hours */}
+            <div className="grid grid-cols-2 gap-4 mb-4">
+              <div>
+                <label className="block text-sm font-medium text-gray-300 mb-2">Hours Projected</label>
+                <input
+                  type="number"
+                  value={editFormData.hours_projected || 0}
+                  onChange={(e) => setEditFormData({...editFormData, hours_projected: Number(e.target.value)})}
+                  className="w-full px-3 py-2 bg-gray-800 text-white border border-gray-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-300 mb-2">Hours Worked</label>
+                <input
+                  type="number"
+                  value={editFormData.hours_worked || 0}
+                  onChange={(e) => setEditFormData({...editFormData, hours_worked: Number(e.target.value)})}
+                  className="w-full px-3 py-2 bg-gray-800 text-white border border-gray-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                />
+              </div>
+            </div>
+
+            {/* Due Date */}
+            <div className="mb-4">
+              <label className="block text-sm font-medium text-gray-300 mb-2">Due Date</label>
+              <input
+                type="date"
+                value={editFormData.due_date ? new Date(editFormData.due_date).toISOString().split('T')[0] : ''}
+                onChange={(e) => setEditFormData({...editFormData, due_date: e.target.value ? new Date(e.target.value) : null})}
+                className="w-full px-3 py-2 bg-gray-800 text-white border border-gray-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+              />
+            </div>
+
+            {/* Recurring */}
+            <div className="mb-6">
+              <label className="block text-sm font-medium text-gray-300 mb-2">Recurring</label>
+              <select
+                value={editFormData.recurring_type || 'None'}
+                onChange={(e) => setEditFormData({...editFormData, recurring_type: e.target.value})}
+                className="w-full px-3 py-2 bg-gray-800 text-white border border-gray-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+              >
+                <option value="None">None</option>
+                <option value="Daily">Daily</option>
+                <option value="Weekly">Weekly</option>
+                <option value="Monthly">Monthly</option>
+              </select>
+            </div>
+
+            {/* Checklist Items */}
+            <div className="mb-6">
+              <label className="block text-sm font-medium text-gray-300 mb-2">Checklist Items</label>
+              <div className="text-sm text-gray-400">Click 'Add Item' to add more checklist items (max 6)</div>
+            </div>
+
+            {/* Action Buttons */}
+            <div className="flex justify-between gap-3">
+              <button
+                onClick={() => {
+                  setEditingTask(null)
+                  setShowAddModal(false)
+                  setEditFormData({})
+                }}
+                className="px-4 py-2 bg-gray-700 text-white rounded-lg hover:bg-gray-600 transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={editingTask ? updateTask : createTask}
+                className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
+              >
+                {editingTask ? 'Update Task' : 'Create Task'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

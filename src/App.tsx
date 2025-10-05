@@ -38,6 +38,9 @@ function App() {
   const [customStartDate, setCustomStartDate] = useState<string>('')
   const [customEndDate, setCustomEndDate] = useState<string>('')
   const [showCustomDatePicker, setShowCustomDatePicker] = useState(false)
+  const [editingTask, setEditingTask] = useState<Task | null>(null)
+  const [showAddTaskModal, setShowAddTaskModal] = useState(false)
+  const [taskFormData, setTaskFormData] = useState<Partial<Task>>({})
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session } }) => {
@@ -704,16 +707,19 @@ function App() {
                   <div style={{ fontSize: '12px', color: '#fed7aa', marginBottom: '4px' }}>🟠 Due Tomorrow</div>
                   <div style={{ fontSize: '32px', fontWeight: 'bold' }}>{stats.dueTomorrow}</div>
                 </div>
-                <button style={{
-                  backgroundColor: '#9333ea',
-                  padding: '20px',
-                  borderRadius: '12px',
-                  border: '2px solid #a855f7',
-                  color: 'white',
-                  cursor: 'pointer',
-                  fontWeight: 'bold',
-                  fontSize: '16px'
-                }}>
+                <button
+                  onClick={() => setShowAddTaskModal(true)}
+                  style={{
+                    backgroundColor: '#9333ea',
+                    padding: '20px',
+                    borderRadius: '12px',
+                    border: '2px solid #a855f7',
+                    color: 'white',
+                    cursor: 'pointer',
+                    fontWeight: 'bold',
+                    fontSize: '16px'
+                  }}
+                >
                   ➕ Add Task
                 </button>
               </div>
@@ -769,11 +775,13 @@ function App() {
                 {filteredTasks.filter(t => isOverdue(t.due_date) && t.status !== 'Done').slice(0, 5).map((task) => (
                   <div
                     key={task.id}
+                    onDoubleClick={() => setEditingTask(task)}
                     style={{
                       backgroundColor: getAreaColor(task.area as Area),
                       padding: '16px',
                       borderRadius: '12px',
-                      borderLeft: '6px solid #dc2626'
+                      borderLeft: '6px solid #dc2626',
+                      cursor: 'pointer'
                     }}
                   >
                     <div style={{ display: 'flex', gap: '12px', alignItems: 'start' }}>
@@ -1908,6 +1916,341 @@ function App() {
                   Save Changes
                 </button>
               </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Task Edit/Add Modal */}
+      {(editingTask || showAddTaskModal) && (
+        <div
+          style={{
+            position: 'fixed',
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            backgroundColor: 'rgba(0, 0, 0, 0.7)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            zIndex: 1000
+          }}
+          onClick={() => {
+            setEditingTask(null)
+            setShowAddTaskModal(false)
+            setTaskFormData({})
+          }}
+        >
+          <div
+            style={{
+              backgroundColor: '#0f1419',
+              borderRadius: '12px',
+              padding: '28px',
+              width: '600px',
+              maxHeight: '90vh',
+              overflow: 'auto',
+              border: 'none'
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '24px' }}>
+              <h2 style={{ color: 'white', fontSize: '20px', fontWeight: '600', margin: 0 }}>
+                {editingTask ? 'Edit Task' : 'Create New Task'}
+              </h2>
+              <button
+                onClick={() => {
+                  setEditingTask(null)
+                  setShowAddTaskModal(false)
+                  setTaskFormData({})
+                }}
+                style={{
+                  background: 'none',
+                  border: 'none',
+                  color: '#888',
+                  fontSize: '28px',
+                  cursor: 'pointer',
+                  padding: '0',
+                  lineHeight: '1'
+                }}
+              >
+                ×
+              </button>
+            </div>
+
+            {/* Task Name */}
+            <div style={{ marginBottom: '16px' }}>
+              <label style={{ color: '#9ca3af', display: 'block', marginBottom: '8px', fontSize: '14px' }}>Task Name</label>
+              <input
+                type="text"
+                value={taskFormData.task_name || (editingTask?.task_name || '')}
+                onChange={(e) => setTaskFormData({ ...taskFormData, task_name: e.target.value })}
+                style={{
+                  width: '100%',
+                  padding: '10px 12px',
+                  backgroundColor: '#1a1f2e',
+                  border: '1px solid #2d3748',
+                  borderRadius: '6px',
+                  color: 'white',
+                  fontSize: '14px',
+                  outline: 'none'
+                }}
+                placeholder="Enter task name..."
+              />
+            </div>
+
+            {/* Description */}
+            <div style={{ marginBottom: '16px' }}>
+              <label style={{ color: '#9ca3af', display: 'block', marginBottom: '8px', fontSize: '14px' }}>Description</label>
+              <textarea
+                value={taskFormData.description || (editingTask?.description || '')}
+                onChange={(e) => setTaskFormData({ ...taskFormData, description: e.target.value })}
+                style={{
+                  width: '100%',
+                  padding: '10px 12px',
+                  backgroundColor: '#1a1f2e',
+                  border: '1px solid #2d3748',
+                  borderRadius: '6px',
+                  color: 'white',
+                  fontSize: '14px',
+                  minHeight: '70px',
+                  outline: 'none',
+                  resize: 'vertical'
+                }}
+                placeholder="Task description..."
+              />
+            </div>
+
+            {/* Area and Type */}
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px', marginBottom: '16px' }}>
+              <div>
+                <label style={{ color: '#9ca3af', display: 'block', marginBottom: '8px', fontSize: '14px' }}>Area</label>
+                <select
+                  value={taskFormData.area || (editingTask?.area || 'Personal')}
+                  onChange={(e) => setTaskFormData({ ...taskFormData, area: e.target.value as Area })}
+                  style={{
+                    width: '100%',
+                    padding: '10px 12px',
+                    backgroundColor: '#1a1f2e',
+                    border: '1px solid #2d3748',
+                    borderRadius: '6px',
+                    color: 'white',
+                    fontSize: '14px',
+                    outline: 'none'
+                  }}
+                >
+                  <option value="Personal">Personal</option>
+                  <option value="Full Stack">Full Stack</option>
+                  <option value="Huge Capital">Huge Capital</option>
+                  <option value="S4">S4</option>
+                  <option value="808">808</option>
+                  <option value="Golf">Golf</option>
+                  <option value="Health">Health</option>
+                </select>
+              </div>
+              <div>
+                <label style={{ color: '#9ca3af', display: 'block', marginBottom: '8px', fontSize: '14px' }}>Type</label>
+                <input
+                  type="text"
+                  value={taskFormData.task_type || (editingTask?.task_type || '')}
+                  onChange={(e) => setTaskFormData({ ...taskFormData, task_type: e.target.value })}
+                  style={{
+                    width: '100%',
+                    padding: '10px 12px',
+                    backgroundColor: '#1a1f2e',
+                    border: '1px solid #2d3748',
+                    borderRadius: '6px',
+                    color: 'white',
+                    fontSize: '14px',
+                    outline: 'none'
+                  }}
+                  placeholder="Select type..."
+                />
+              </div>
+            </div>
+
+            {/* Priority and Effort Level */}
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px', marginBottom: '16px' }}>
+              <div>
+                <label style={{ color: '#9ca3af', display: 'block', marginBottom: '8px', fontSize: '14px' }}>Priority</label>
+                <select
+                  value={taskFormData.priority || (editingTask?.priority || 'Medium')}
+                  onChange={(e) => setTaskFormData({ ...taskFormData, priority: e.target.value })}
+                  style={{
+                    width: '100%',
+                    padding: '10px 12px',
+                    backgroundColor: '#1a1f2e',
+                    border: '1px solid #2d3748',
+                    borderRadius: '6px',
+                    color: 'white',
+                    fontSize: '14px',
+                    outline: 'none'
+                  }}
+                >
+                  <option value="Low">Low</option>
+                  <option value="Medium">Medium</option>
+                  <option value="High">High</option>
+                </select>
+              </div>
+              <div>
+                <label style={{ color: '#9ca3af', display: 'block', marginBottom: '8px', fontSize: '14px' }}>Money Maker</label>
+                <select
+                  value={taskFormData.effort_level || (editingTask?.effort_level || '$ Lil Money')}
+                  onChange={(e) => setTaskFormData({ ...taskFormData, effort_level: e.target.value })}
+                  style={{
+                    width: '100%',
+                    padding: '10px 12px',
+                    backgroundColor: '#1a1f2e',
+                    border: '1px solid #2d3748',
+                    borderRadius: '6px',
+                    color: 'white',
+                    fontSize: '14px',
+                    outline: 'none'
+                  }}
+                >
+                  <option value="$ Lil Money">$ Lil Money</option>
+                  <option value="$$ Some Money">$$ Some Money</option>
+                  <option value="$$$ Big Money">$$$ Big Money</option>
+                  <option value="$$$$ Huge Money">$$$$ Huge Money</option>
+                </select>
+              </div>
+            </div>
+
+            {/* Hours */}
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px', marginBottom: '16px' }}>
+              <div>
+                <label style={{ color: '#9ca3af', display: 'block', marginBottom: '8px', fontSize: '14px' }}>Hours Projected</label>
+                <input
+                  type="number"
+                  value={taskFormData.hours_projected ?? (editingTask?.hours_projected || 0)}
+                  onChange={(e) => setTaskFormData({ ...taskFormData, hours_projected: Number(e.target.value) })}
+                  style={{
+                    width: '100%',
+                    padding: '10px 12px',
+                    backgroundColor: '#1a1f2e',
+                    border: '1px solid #2d3748',
+                    borderRadius: '6px',
+                    color: 'white',
+                    fontSize: '14px',
+                    outline: 'none'
+                  }}
+                />
+              </div>
+              <div>
+                <label style={{ color: '#9ca3af', display: 'block', marginBottom: '8px', fontSize: '14px' }}>Hours Worked</label>
+                <input
+                  type="number"
+                  value={taskFormData.hours_worked ?? (editingTask?.hours_worked || 0)}
+                  onChange={(e) => setTaskFormData({ ...taskFormData, hours_worked: Number(e.target.value) })}
+                  style={{
+                    width: '100%',
+                    padding: '10px 12px',
+                    backgroundColor: '#1a1f2e',
+                    border: '1px solid #2d3748',
+                    borderRadius: '6px',
+                    color: 'white',
+                    fontSize: '14px',
+                    outline: 'none'
+                  }}
+                />
+              </div>
+            </div>
+
+            {/* Due Date */}
+            <div style={{ marginBottom: '24px' }}>
+              <label style={{ color: '#9ca3af', display: 'block', marginBottom: '8px', fontSize: '14px' }}>Due Date</label>
+              <div style={{ position: 'relative' }}>
+                <input
+                  type="date"
+                  value={taskFormData.due_date ? new Date(taskFormData.due_date).toISOString().split('T')[0] : (editingTask?.due_date ? new Date(editingTask.due_date).toISOString().split('T')[0] : '')}
+                  onChange={(e) => setTaskFormData({ ...taskFormData, due_date: e.target.value })}
+                  style={{
+                    width: '100%',
+                    padding: '10px 12px 10px 40px',
+                    backgroundColor: '#1a1f2e',
+                    border: '1px solid #2d3748',
+                    borderRadius: '6px',
+                    color: 'white',
+                    fontSize: '14px',
+                    outline: 'none'
+                  }}
+                />
+                <div style={{ position: 'absolute', left: '12px', top: '50%', transform: 'translateY(-50%)', color: '#9ca3af', pointerEvents: 'none' }}>📅</div>
+              </div>
+            </div>
+
+            {/* Action Buttons */}
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '12px' }}>
+              <button
+                onClick={() => {
+                  setEditingTask(null)
+                  setShowAddTaskModal(false)
+                  setTaskFormData({})
+                }}
+                style={{
+                  padding: '10px 20px',
+                  backgroundColor: '#374151',
+                  border: 'none',
+                  borderRadius: '6px',
+                  color: '#e5e7eb',
+                  cursor: 'pointer',
+                  fontWeight: '500',
+                  fontSize: '14px'
+                }}
+              >
+                Cancel
+              </button>
+              <button
+                onClick={async () => {
+                  if (editingTask) {
+                    // Update task
+                    await supabase.from('TG To Do List').update({
+                      task_name: taskFormData.task_name || editingTask.task_name,
+                      description: taskFormData.description || editingTask.description,
+                      area: taskFormData.area || editingTask.area,
+                      task_type: taskFormData.task_type || editingTask.task_type,
+                      priority: taskFormData.priority || editingTask.priority,
+                      effort_level: taskFormData.effort_level || editingTask.effort_level,
+                      due_date: taskFormData.due_date || editingTask.due_date,
+                      'Hours Projected': taskFormData.hours_projected ?? editingTask.hours_projected,
+                      'Hours Worked': taskFormData.hours_worked ?? editingTask.hours_worked
+                    }).eq('id', editingTask.id)
+                    if (session) fetchTasks(session.user.id)
+                  } else {
+                    // Create new task
+                    await supabase.from('TG To Do List').insert({
+                      task_name: taskFormData.task_name,
+                      description: taskFormData.description || '',
+                      area: taskFormData.area || 'Personal',
+                      task_type: taskFormData.task_type || '',
+                      status: 'Not started',
+                      automation: 'Manual',
+                      priority: taskFormData.priority || 'Medium',
+                      effort_level: taskFormData.effort_level || '$ Lil Money',
+                      due_date: taskFormData.due_date || null,
+                      user_id: session?.user.id,
+                      'Hours Projected': taskFormData.hours_projected || 0,
+                      'Hours Worked': taskFormData.hours_worked || 0
+                    })
+                    if (session) fetchTasks(session.user.id)
+                  }
+                  setEditingTask(null)
+                  setShowAddTaskModal(false)
+                  setTaskFormData({})
+                }}
+                style={{
+                  padding: '10px 20px',
+                  backgroundColor: '#60a5fa',
+                  border: 'none',
+                  borderRadius: '6px',
+                  color: 'white',
+                  cursor: 'pointer',
+                  fontWeight: '500',
+                  fontSize: '14px'
+                }}
+              >
+                {editingTask ? 'Update Task' : 'Create Task'}
+              </button>
             </div>
           </div>
         </div>
