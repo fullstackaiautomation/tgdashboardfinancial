@@ -1,8 +1,8 @@
 import { useState, useEffect, useMemo } from 'react'
-import { Plus, Check, Trash2, Calendar as CalendarIcon, Filter } from 'lucide-react'
+import { Plus, Check, Trash2, Calendar as CalendarIcon } from 'lucide-react'
 import { supabase } from '../lib/supabase'
 import { Task, Area } from '../types/task.tsx'
-import { format, isToday, isTomorrow, isAfter } from 'date-fns'
+import { format, isToday, isTomorrow } from 'date-fns'
 
 const TodoList = () => {
   const [tasks, setTasks] = useState<Task[]>([])
@@ -81,7 +81,7 @@ const TodoList = () => {
     if (!newTodoText.trim() || !userId) return
 
     try {
-      const { data, error } = await supabase
+      const { error } = await supabase
         .from('TG To Do List')
         .insert({
           task_name: newTodoText,
