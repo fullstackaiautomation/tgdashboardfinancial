@@ -15,6 +15,10 @@ interface Task {
   completed_at: string | null
   hours_projected: number | null
   effort_level: string
+  updated_at: string | null
+  hours_worked: number | null
+  recurring_template: string | null
+  recurring_type: string | null
 }
 
 function App() {
@@ -26,7 +30,7 @@ function App() {
   const [tasks, setTasks] = useState<Task[]>([])
   const [deepWorkSessions, setDeepWorkSessions] = useState<any[]>([])
   const [selectedArea, setSelectedArea] = useState<Area | 'All Areas'>('All Areas')
-  const [activeMainTab, setActiveMainTab] = useState<'grinding'>('grinding')
+  const [activeMainTab, setActiveMainTab] = useState<'daily'>('daily')
   const [activeSubTab, setActiveSubTab] = useState<'todo' | 'schedule' | 'deepwork'>('todo')
   const [selectedTimePeriod, setSelectedTimePeriod] = useState<'All Time' | 'Today' | 'This Week' | 'This Month'>('All Time')
   const [selectedDWArea, setSelectedDWArea] = useState<Area | 'All Areas'>('All Areas')
@@ -41,6 +45,19 @@ function App() {
   const [editingTask, setEditingTask] = useState<Task | null>(null)
   const [showAddTaskModal, setShowAddTaskModal] = useState(false)
   const [taskFormData, setTaskFormData] = useState<Partial<Task>>({})
+  const [showDatePicker, setShowDatePicker] = useState(false)
+  const [datePickerTask, setDatePickerTask] = useState<Task | null>(null)
+  const [selectedStatusFilter, setSelectedStatusFilter] = useState<'all' | 'active' | 'completed' | 'recurring' | 'overdue' | 'dueToday' | 'completedToday' | 'dueTomorrow'>('all')
+  const [editingField, setEditingField] = useState<{ taskId: string, field: string } | null>(null)
+  const [dwSessionTask, setDwSessionTask] = useState<Task | null>(null)
+  const [dwSessionTaskType, setDwSessionTaskType] = useState<string>('')
+  const [dwSessionFocusArea, setDwSessionFocusArea] = useState<Area | ''>('')
+  const [dwTaskSearchTerm, setDwTaskSearchTerm] = useState<string>('')
+  const [showDwTaskDropdown, setShowDwTaskDropdown] = useState<boolean>(false)
+  const [timerRunning, setTimerRunning] = useState<boolean>(false)
+  const [timerPaused, setTimerPaused] = useState<boolean>(false)
+  const [timerSeconds, setTimerSeconds] = useState<number>(0)
+  const [sessionStartTime, setSessionStartTime] = useState<Date | null>(null)
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session } }) => {
@@ -63,6 +80,18 @@ function App() {
     return () => subscription.unsubscribe()
   }, [])
 
+  useEffect(() => {
+    let interval: NodeJS.Timeout | null = null
+    if (timerRunning && !timerPaused) {
+      interval = setInterval(() => {
+        setTimerSeconds(prev => prev + 1)
+      }, 1000)
+    }
+    return () => {
+      if (interval) clearInterval(interval)
+    }
+  }, [timerRunning, timerPaused])
+
   const fetchTasks = async (userId: string) => {
     try {
       const { data, error } = await supabase
@@ -79,6 +108,7 @@ function App() {
   }
 
   const fetchDeepWorkSessions = async (userId: string) => {
+    console.log('🔵 fetchDeepWorkSessions called for user:', userId)
     try {
       const { data, error } = await supabase
         .from('deep_work_log')
@@ -91,7 +121,13 @@ function App() {
         .eq('user_id', userId)
         .order('start_time', { ascending: false })
 
-      if (error) throw error
+      if (error) {
+        console.error('🔴 Fetch error:', error)
+        throw error
+      }
+
+      console.log('✅ Fetched sessions:', data?.length || 0, 'sessions')
+      console.log('📊 Sessions data:', data)
       setDeepWorkSessions(data || [])
     } catch (error) {
       console.error('Error fetching deep work sessions:', error)
@@ -129,6 +165,132 @@ function App() {
     } catch (error) {
       console.error('Error updating task:', error)
     }
+  }
+
+  const deleteTask = async (taskId: string) => {
+    if (!window.confirm('Are you sure you want to delete this task?')) return
+
+    try {
+      const { error } = await supabase
+        .from('TG To Do List')
+        .delete()
+        .eq('id', taskId)
+
+      if (error) throw error
+      if (session) fetchTasks(session.user.id)
+      setEditingTask(null)
+      setShowAddTaskModal(false)
+      setTaskFormData({})
+    } catch (error) {
+      console.error('Error deleting task:', error)
+    }
+  }
+
+  const updateTaskDueDate = async (taskId: string, newDate: string, isCompleted: boolean = false) => {
+    try {
+      const updateData = isCompleted
+        ? { completed_at: newDate, updated_at: new Date().toISOString() }
+        : { due_date: newDate }
+
+      const { error } = await supabase
+        .from('TG To Do List')
+        .update(updateData)
+        .eq('id', taskId)
+
+      if (error) throw error
+      if (session) fetchTasks(session.user.id)
+      setShowDatePicker(false)
+      setDatePickerTask(null)
+    } catch (error) {
+      console.error('Error updating task date:', error)
+    }
+  }
+
+  const startTimer = () => {
+    setTimerRunning(true)
+    setTimerPaused(false)
+    setSessionStartTime(new Date())
+  }
+
+  const pauseTimer = () => {
+    setTimerPaused(!timerPaused)
+  }
+
+  const saveSession = async () => {
+    console.log('🔵 saveSession called', {
+      hasSession: !!session,
+      sessionStartTime,
+      dwSessionFocusArea,
+      timerSeconds,
+      durationMinutes: Math.floor(timerSeconds / 60)
+    })
+
+    if (session && sessionStartTime && dwSessionFocusArea) {
+      try {
+        const sessionData = {
+          user_id: session.user.id,
+          task_id: dwSessionTask?.id || null,
+          area: dwSessionFocusArea,
+          task_type: dwSessionTaskType || null,
+          start_time: sessionStartTime.toISOString(),
+          end_time: new Date().toISOString(),
+          duration_minutes: Math.floor(timerSeconds / 60)
+        }
+
+        console.log('🔵 Inserting session data:', sessionData)
+
+        const { data, error } = await supabase
+          .from('deep_work_log')
+          .insert(sessionData)
+          .select()
+
+        if (error) {
+          console.error('🔴 Insert error:', error)
+          throw error
+        }
+
+        console.log('✅ Session saved successfully:', data)
+
+        if (session) {
+          console.log('🔵 Fetching updated sessions for user:', session.user.id)
+          await fetchDeepWorkSessions(session.user.id)
+        }
+      } catch (error) {
+        console.error('Error saving deep work session:', error)
+      }
+    } else {
+      console.log('🔴 Cannot save - missing required data:', {
+        hasSession: !!session,
+        hasStartTime: !!sessionStartTime,
+        hasFocusArea: !!dwSessionFocusArea
+      })
+    }
+
+    setTimerRunning(false)
+    setTimerPaused(false)
+    setTimerSeconds(0)
+    setSessionStartTime(null)
+    setDwSessionTask(null)
+    setDwSessionTaskType('')
+    setDwSessionFocusArea('')
+    setDwTaskSearchTerm('')
+  }
+
+  const cancelTimerSession = () => {
+    setTimerRunning(false)
+    setTimerPaused(false)
+    setTimerSeconds(0)
+    setSessionStartTime(null)
+    setDwSessionTask(null)
+    setDwSessionTaskType('')
+    setDwSessionFocusArea('')
+    setDwTaskSearchTerm('')
+  }
+
+  const formatTime = (seconds: number) => {
+    const mins = Math.floor(seconds / 60)
+    const secs = seconds % 60
+    return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`
   }
 
   const startEditingSession = (sessionData: any) => {
@@ -206,51 +368,98 @@ function App() {
     return colors[area] || '#6b7280'
   }
 
+  const getTaskTypesByArea = (area: Area | '') => {
+    if (area === 'S4') return ['Data', 'Marketing', 'New Build', 'Update Build', 'Sales', 'Planning']
+    if (area === 'Huge Capital') return ['Admin', 'New Build', 'Update Build', 'Planning']
+    if (area === 'Full Stack') return ['Admin', 'Internal Build', 'Client Build', 'Team', 'Internal Update', 'Client Update', 'Marketing', 'Sales']
+    if (area === '808') return ['Online', 'Artists', 'Cost Savings', 'Customer Service', 'Data', 'Fulfillment', 'Automation']
+    if (area === 'Personal') return ['Arya', 'Car', 'Cheypow', 'Finances', 'Friends', 'House', 'Life']
+    if (area === 'Golf') return ['Content', 'Equipment', 'Practice', 'Golfing', 'Admin']
+    if (area === 'Health') return ['Gym', 'Sleep', 'Stretching', 'Walk', 'Yoga']
+    return []
+  }
+
   const isToday = (dateStr: string | null) => {
     if (!dateStr) return false
-    const today = new Date().toISOString().split('T')[0]
-    return dateStr.startsWith(today)
+    const taskDateParts = dateStr.split('T')[0].split('-')
+    const taskDate = new Date(parseInt(taskDateParts[0]), parseInt(taskDateParts[1]) - 1, parseInt(taskDateParts[2]))
+    const today = new Date()
+    today.setHours(0, 0, 0, 0)
+    taskDate.setHours(0, 0, 0, 0)
+    return taskDate.getTime() === today.getTime()
   }
 
   const isTomorrow = (dateStr: string | null) => {
     if (!dateStr) return false
+    const taskDateParts = dateStr.split('T')[0].split('-')
+    const taskDate = new Date(parseInt(taskDateParts[0]), parseInt(taskDateParts[1]) - 1, parseInt(taskDateParts[2]))
     const tomorrow = new Date()
     tomorrow.setDate(tomorrow.getDate() + 1)
-    const tomorrowStr = tomorrow.toISOString().split('T')[0]
-    return dateStr.startsWith(tomorrowStr)
+    tomorrow.setHours(0, 0, 0, 0)
+    taskDate.setHours(0, 0, 0, 0)
+    return taskDate.getTime() === tomorrow.getTime()
   }
 
   const isOverdue = (dateStr: string | null) => {
     if (!dateStr) return false
-    const taskDate = new Date(dateStr)
+    const taskDateParts = dateStr.split('T')[0].split('-')
+    const taskDate = new Date(parseInt(taskDateParts[0]), parseInt(taskDateParts[1]) - 1, parseInt(taskDateParts[2]))
     const today = new Date()
     today.setHours(0, 0, 0, 0)
+    taskDate.setHours(0, 0, 0, 0)
     return taskDate < today
   }
 
-  const filteredTasks = selectedArea === 'All Areas'
+  let filteredTasks = selectedArea === 'All Areas'
     ? tasks
     : tasks.filter(t => t.area === selectedArea)
+
+  // Apply status filter
+  if (selectedStatusFilter !== 'all') {
+    switch (selectedStatusFilter) {
+      case 'active':
+        filteredTasks = filteredTasks.filter(t => t.status !== 'Done')
+        break
+      case 'completed':
+        filteredTasks = filteredTasks.filter(t => t.status === 'Done')
+        break
+      case 'recurring':
+        filteredTasks = filteredTasks.filter(t => t.recurring_type !== null && t.recurring_type !== '' && t.recurring_type !== 'None')
+        break
+      case 'overdue':
+        filteredTasks = filteredTasks.filter(t => isOverdue(t.due_date) && t.status !== 'Done')
+        break
+      case 'dueToday':
+        filteredTasks = filteredTasks.filter(t => isToday(t.due_date) && t.status !== 'Done')
+        break
+      case 'completedToday':
+        filteredTasks = filteredTasks.filter(t => t.status === 'Done' && t.updated_at && isToday(t.updated_at))
+        break
+      case 'dueTomorrow':
+        filteredTasks = filteredTasks.filter(t => isTomorrow(t.due_date) && t.status !== 'Done')
+        break
+    }
+  }
 
   const stats = {
     active: tasks.filter(t => t.status !== 'Done').length,
     completed: tasks.filter(t => t.status === 'Done').length,
-    recurring: tasks.filter(t => t.status !== 'Done').length,
+    recurring: tasks.filter(t => t.recurring_type !== null && t.recurring_type !== '' && t.recurring_type !== 'None').length,
     overdue: tasks.filter(t => isOverdue(t.due_date) && t.status !== 'Done').length,
     dueToday: tasks.filter(t => isToday(t.due_date) && t.status !== 'Done').length,
-    completedToday: tasks.filter(t => isToday(t.due_date) && t.status === 'Done').length,
+    completedToday: tasks.filter(t => t.status === 'Done' && t.updated_at && isToday(t.updated_at)).length,
     dueTomorrow: tasks.filter(t => isTomorrow(t.due_date) && t.status !== 'Done').length,
   }
 
   const areaStats = {
-    'All Areas': { count: tasks.length, hours: tasks.reduce((sum, t) => sum + (t.hours_projected || 0), 0) },
-    'Full Stack': { count: tasks.filter(t => t.area === 'Full Stack').length, hours: tasks.filter(t => t.area === 'Full Stack').reduce((sum, t) => sum + (t.hours_projected || 0), 0) },
-    'Huge Capital': { count: tasks.filter(t => t.area === 'Huge Capital').length, hours: tasks.filter(t => t.area === 'Huge Capital').reduce((sum, t) => sum + (t.hours_projected || 0), 0) },
-    'S4': { count: tasks.filter(t => t.area === 'S4').length, hours: tasks.filter(t => t.area === 'S4').reduce((sum, t) => sum + (t.hours_projected || 0), 0) },
-    'Personal': { count: tasks.filter(t => t.area === 'Personal').length, hours: tasks.filter(t => t.area === 'Personal').reduce((sum, t) => sum + (t.hours_projected || 0), 0) },
-    '808': { count: tasks.filter(t => t.area === '808').length, hours: tasks.filter(t => t.area === '808').reduce((sum, t) => sum + (t.hours_projected || 0), 0) },
-    'Health': { count: tasks.filter(t => t.area === 'Health').length, hours: tasks.filter(t => t.area === 'Health').reduce((sum, t) => sum + (t.hours_projected || 0), 0) },
-    'Golf': { count: tasks.filter(t => t.area === 'Golf').length, hours: tasks.filter(t => t.area === 'Golf').reduce((sum, t) => sum + (t.hours_projected || 0), 0) },
+    'All Areas': { count: filteredTasks.length, hours: filteredTasks.reduce((sum, t) => sum + (t.hours_projected || 0), 0) },
+    'Full Stack': { count: filteredTasks.filter(t => t.area === 'Full Stack').length, hours: filteredTasks.filter(t => t.area === 'Full Stack').reduce((sum, t) => sum + (t.hours_projected || 0), 0) },
+    'Huge Capital': { count: filteredTasks.filter(t => t.area === 'Huge Capital').length, hours: filteredTasks.filter(t => t.area === 'Huge Capital').reduce((sum, t) => sum + (t.hours_projected || 0), 0) },
+    'S4': { count: filteredTasks.filter(t => t.area === 'S4').length, hours: filteredTasks.filter(t => t.area === 'S4').reduce((sum, t) => sum + (t.hours_projected || 0), 0) },
+    'Personal': { count: filteredTasks.filter(t => t.area === 'Personal').length, hours: filteredTasks.filter(t => t.area === 'Personal').reduce((sum, t) => sum + (t.hours_projected || 0), 0) },
+    '808': { count: filteredTasks.filter(t => t.area === '808').length, hours: filteredTasks.filter(t => t.area === '808').reduce((sum, t) => sum + (t.hours_projected || 0), 0) },
+    'Health': { count: filteredTasks.filter(t => t.area === 'Health').length, hours: filteredTasks.filter(t => t.area === 'Health').reduce((sum, t) => sum + (t.hours_projected || 0), 0) },
+    'Golf': { count: filteredTasks.filter(t => t.area === 'Golf').length, hours: filteredTasks.filter(t => t.area === 'Golf').reduce((sum, t) => sum + (t.hours_projected || 0), 0) },
   }
 
   // Deep Work Session Calculations
@@ -302,28 +511,28 @@ function App() {
   }
 
   const dwAreaCountsArray = [
-    { area: 'All Areas', count: deepWorkSessions.length },
-    { area: 'Personal', count: deepWorkSessions.filter(s => s.area === 'Personal').length },
-    { area: 'Full Stack', count: deepWorkSessions.filter(s => s.area === 'Full Stack').length },
-    { area: 'Huge Capital', count: deepWorkSessions.filter(s => s.area === 'Huge Capital').length },
-    { area: 'S4', count: deepWorkSessions.filter(s => s.area === 'S4').length },
-    { area: '808', count: deepWorkSessions.filter(s => s.area === '808').length },
-    { area: 'Health', count: deepWorkSessions.filter(s => s.area === 'Health').length },
-    { area: 'Golf', count: deepWorkSessions.filter(s => s.area === 'Golf').length }
+    { area: 'All Areas', count: filteredDWSessions.length },
+    { area: 'Personal', count: filteredDWSessions.filter(s => s.area === 'Personal').length },
+    { area: 'Full Stack', count: filteredDWSessions.filter(s => s.area === 'Full Stack').length },
+    { area: 'Huge Capital', count: filteredDWSessions.filter(s => s.area === 'Huge Capital').length },
+    { area: 'S4', count: filteredDWSessions.filter(s => s.area === 'S4').length },
+    { area: '808', count: filteredDWSessions.filter(s => s.area === '808').length },
+    { area: 'Health', count: filteredDWSessions.filter(s => s.area === 'Health').length },
+    { area: 'Golf', count: filteredDWSessions.filter(s => s.area === 'Golf').length }
   ]
 
   const effortLevelCounts = {
-    'All Levels': deepWorkSessions.length,
-    '$$$ MoneyMaker': deepWorkSessions.filter(s => s.effort_level === '$$$ MoneyMaker').length,
-    '$ Lil Money': deepWorkSessions.filter(s => s.effort_level === '$ Lil Money').length,
-    '-$ Save Dat Money': deepWorkSessions.filter(s => s.effort_level === '-$ Save Dat Money').length,
-    ':( Pointless': deepWorkSessions.filter(s => s.effort_level === ':( Pointless').length,
-    '8) JusVibin': deepWorkSessions.filter(s => s.effort_level === '8) JusVibin').length
+    'All Levels': filteredDWSessions.length,
+    '$$$ MoneyMaker': filteredDWSessions.filter(s => s.effort_level === '$$$ MoneyMaker').length,
+    '$ Lil Money': filteredDWSessions.filter(s => s.effort_level === '$ Lil Money').length,
+    '-$ Save Dat Money': filteredDWSessions.filter(s => s.effort_level === '-$ Save Dat Money').length,
+    ':( Pointless': filteredDWSessions.filter(s => s.effort_level === ':( Pointless').length,
+    '8) JusVibin': filteredDWSessions.filter(s => s.effort_level === '8) JusVibin').length
   }
 
   // Top 5 tasks by duration
   const taskDurations: { [key: string]: { minutes: number, sessions: number, area: string, taskType: string } } = {}
-  deepWorkSessions.forEach(session => {
+  filteredDWSessions.forEach(session => {
     const taskName = session.task?.task_name || 'Unknown Task'
     if (!taskDurations[taskName]) {
       taskDurations[taskName] = { minutes: 0, sessions: 0, area: session.area, taskType: session.task_type || '' }
@@ -361,7 +570,7 @@ function App() {
       start = new Date(0)
     }
 
-    const sessions = deepWorkSessions.filter(s => {
+    const sessions = filteredDWSessions.filter(s => {
       if (area !== 'All' && s.area !== area) return false
       return new Date(s.start_time) >= start
     })
@@ -533,15 +742,15 @@ function App() {
 
         {/* Navigation */}
         <div style={{ flex: 1, padding: '16px' }}>
-          {/* Main Tab - Grinding */}
+          {/* Main Tab - Daily */}
           <div style={{ marginBottom: '8px' }}>
             <button
-              onClick={() => setActiveMainTab('grinding')}
+              onClick={() => setActiveMainTab('daily')}
               style={{
                 width: '100%',
                 padding: '12px 16px',
-                backgroundColor: activeMainTab === 'grinding' ? '#f97316' : 'transparent',
-                color: activeMainTab === 'grinding' ? 'white' : '#f97316',
+                backgroundColor: activeMainTab === 'daily' ? '#f97316' : 'transparent',
+                color: activeMainTab === 'daily' ? 'white' : '#f97316',
                 border: 'none',
                 borderRadius: '8px',
                 cursor: 'pointer',
@@ -553,75 +762,13 @@ function App() {
                 gap: '8px'
               }}
             >
-              💪 Grinding
+              <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="2">
+                <rect x="2" y="2" width="12" height="12" rx="2" />
+                <path d="M5 8l2 2 4-4" />
+              </svg>
+              Daily
             </button>
           </div>
-
-          {/* Sub Tabs */}
-          {activeMainTab === 'grinding' && (
-            <div style={{ marginLeft: '12px', display: 'flex', flexDirection: 'column', gap: '4px' }}>
-              <button
-                onClick={() => setActiveSubTab('todo')}
-                style={{
-                  width: '100%',
-                  padding: '10px 16px',
-                  backgroundColor: activeSubTab === 'todo' ? '#2a2a2a' : 'transparent',
-                  color: activeSubTab === 'todo' ? 'white' : '#9ca3af',
-                  border: 'none',
-                  borderRadius: '6px',
-                  cursor: 'pointer',
-                  fontWeight: activeSubTab === 'todo' ? '500' : '400',
-                  fontSize: '14px',
-                  textAlign: 'left',
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: '8px'
-                }}
-              >
-                📋 To-Do List
-              </button>
-              <button
-                onClick={() => setActiveSubTab('schedule')}
-                style={{
-                  width: '100%',
-                  padding: '10px 16px',
-                  backgroundColor: activeSubTab === 'schedule' ? '#2a2a2a' : 'transparent',
-                  color: activeSubTab === 'schedule' ? 'white' : '#9ca3af',
-                  border: 'none',
-                  borderRadius: '6px',
-                  cursor: 'pointer',
-                  fontWeight: activeSubTab === 'schedule' ? '500' : '400',
-                  fontSize: '14px',
-                  textAlign: 'left',
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: '8px'
-                }}
-              >
-                📅 Schedule
-              </button>
-              <button
-                onClick={() => setActiveSubTab('deepwork')}
-                style={{
-                  width: '100%',
-                  padding: '10px 16px',
-                  backgroundColor: activeSubTab === 'deepwork' ? '#2a2a2a' : 'transparent',
-                  color: activeSubTab === 'deepwork' ? 'white' : '#9ca3af',
-                  border: 'none',
-                  borderRadius: '6px',
-                  cursor: 'pointer',
-                  fontWeight: activeSubTab === 'deepwork' ? '500' : '400',
-                  fontSize: '14px',
-                  textAlign: 'left',
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: '8px'
-                }}
-              >
-                🎯 Deep Work
-              </button>
-            </div>
-          )}
         </div>
 
         {/* User Profile / Sign Out */}
@@ -642,7 +789,7 @@ function App() {
               TG
             </div>
             <div style={{ fontSize: '14px', fontWeight: '500', marginBottom: '4px' }}>
-              Tyler Grassmick
+              Taylor Grassmick
             </div>
             <div style={{ fontSize: '12px', color: '#6b7280', marginBottom: '8px' }}>
               {session.user.email}
@@ -668,47 +815,218 @@ function App() {
       </div>
 
       {/* Main Content Area */}
-      <div style={{ flex: 1, overflowY: 'auto', padding: '24px' }}>
-        {activeSubTab === 'todo' && (
+      <div style={{ flex: 1, display: 'flex', flexDirection: 'column' }}>
+        {/* Header with Tabs */}
+        <div style={{
+          backgroundColor: '#1a1a1a',
+          borderBottom: '1px solid #2a2a2a',
+          padding: '16px 24px',
+          display: 'flex',
+          gap: '12px',
+          alignItems: 'center'
+        }}>
+          <button
+            onClick={() => setActiveSubTab('todo')}
+            style={{
+              padding: '10px 20px',
+              backgroundColor: activeSubTab === 'todo' ? '#f97316' : 'transparent',
+              color: activeSubTab === 'todo' ? 'white' : '#9ca3af',
+              border: activeSubTab === 'todo' ? '2px solid #fb923c' : '2px solid transparent',
+              borderRadius: '8px',
+              cursor: 'pointer',
+              fontWeight: '600',
+              fontSize: '14px',
+              display: 'flex',
+              alignItems: 'center',
+              gap: '8px',
+              transition: 'all 0.2s'
+            }}
+          >
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="2">
+              <rect x="2" y="2" width="12" height="12" rx="2" />
+              <path d="M5 8l2 2 4-4" />
+            </svg>
+            To-Do List
+          </button>
+          <button
+            onClick={() => setActiveSubTab('schedule')}
+            style={{
+              padding: '10px 20px',
+              backgroundColor: activeSubTab === 'schedule' ? '#f97316' : 'transparent',
+              color: activeSubTab === 'schedule' ? 'white' : '#9ca3af',
+              border: activeSubTab === 'schedule' ? '2px solid #fb923c' : '2px solid transparent',
+              borderRadius: '8px',
+              cursor: 'pointer',
+              fontWeight: '600',
+              fontSize: '14px',
+              display: 'flex',
+              alignItems: 'center',
+              gap: '8px',
+              transition: 'all 0.2s'
+            }}
+          >
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="2">
+              <rect x="2" y="2" width="12" height="12" rx="2" />
+              <line x1="2" y1="5" x2="14" y2="5" />
+              <line x1="5" y1="2" x2="5" y2="5" />
+              <line x1="11" y1="2" x2="11" y2="5" />
+            </svg>
+            Schedule
+          </button>
+          <button
+            onClick={() => setActiveSubTab('deepwork')}
+            style={{
+              padding: '10px 20px',
+              backgroundColor: activeSubTab === 'deepwork' ? '#f97316' : 'transparent',
+              color: activeSubTab === 'deepwork' ? 'white' : '#9ca3af',
+              border: activeSubTab === 'deepwork' ? '2px solid #fb923c' : '2px solid transparent',
+              borderRadius: '8px',
+              cursor: 'pointer',
+              fontWeight: '600',
+              fontSize: '14px',
+              display: 'flex',
+              alignItems: 'center',
+              gap: '8px',
+              transition: 'all 0.2s'
+            }}
+          >
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="2">
+              <circle cx="8" cy="8" r="6" />
+              <circle cx="8" cy="8" r="3" />
+            </svg>
+            Deep Work
+          </button>
+        </div>
+
+        {/* Content */}
+        <div style={{ flex: 1, overflowY: 'auto', padding: '24px' }}>
+          {activeSubTab === 'todo' && (
           <div style={{ display: 'flex', gap: '24px' }}>
             {/* Left Column - Stats & Tasks */}
             <div style={{ flex: 1 }}>
               {/* Stats Grid - Row 1 */}
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '16px', marginBottom: '16px' }}>
-                <div style={{ backgroundColor: '#2563eb', padding: '20px', borderRadius: '12px', border: '2px solid #3b82f6' }}>
-                  <div style={{ fontSize: '12px', color: '#bfdbfe', marginBottom: '4px' }}>🔵 Active</div>
+                <button
+                  onClick={() => setSelectedStatusFilter('active')}
+                  style={{
+                    backgroundColor: '#1a1a1a',
+                    padding: '20px',
+                    borderRadius: '12px',
+                    border: selectedStatusFilter === 'active' ? '3px solid #2563eb' : '2px solid #333',
+                    cursor: 'pointer',
+                    color: 'white',
+                    textAlign: 'left',
+                    transition: 'all 0.2s'
+                  }}
+                >
+                  <div style={{ fontSize: '12px', color: '#9ca3af', marginBottom: '4px' }}>🔵 Active</div>
                   <div style={{ fontSize: '32px', fontWeight: 'bold' }}>{stats.active}</div>
-                </div>
-                <div style={{ backgroundColor: '#16a34a', padding: '20px', borderRadius: '12px', border: '2px solid #22c55e' }}>
-                  <div style={{ fontSize: '12px', color: '#bbf7d0', marginBottom: '4px' }}>🟢 Completed</div>
+                </button>
+                <button
+                  onClick={() => setSelectedStatusFilter('completed')}
+                  style={{
+                    backgroundColor: '#1a1a1a',
+                    padding: '20px',
+                    borderRadius: '12px',
+                    border: selectedStatusFilter === 'completed' ? '3px solid #16a34a' : '2px solid #333',
+                    cursor: 'pointer',
+                    color: 'white',
+                    textAlign: 'left',
+                    transition: 'all 0.2s'
+                  }}
+                >
+                  <div style={{ fontSize: '12px', color: '#9ca3af', marginBottom: '4px' }}>🟢 Completed</div>
                   <div style={{ fontSize: '32px', fontWeight: 'bold' }}>{stats.completed}</div>
-                </div>
-                <div style={{ backgroundColor: '#9333ea', padding: '20px', borderRadius: '12px', border: '2px solid #a855f7' }}>
-                  <div style={{ fontSize: '12px', color: '#e9d5ff', marginBottom: '4px' }}>🔁 Recurring</div>
+                </button>
+                <button
+                  onClick={() => setSelectedStatusFilter('recurring')}
+                  style={{
+                    backgroundColor: '#1a1a1a',
+                    padding: '20px',
+                    borderRadius: '12px',
+                    border: selectedStatusFilter === 'recurring' ? '3px solid #9333ea' : '2px solid #333',
+                    cursor: 'pointer',
+                    color: 'white',
+                    textAlign: 'left',
+                    transition: 'all 0.2s'
+                  }}
+                >
+                  <div style={{ fontSize: '12px', color: '#9ca3af', marginBottom: '4px' }}>🔁 Recurring</div>
                   <div style={{ fontSize: '32px', fontWeight: 'bold' }}>5</div>
-                </div>
-                <div style={{ backgroundColor: '#dc2626', padding: '20px', borderRadius: '12px', border: '2px solid #ef4444' }}>
-                  <div style={{ fontSize: '12px', color: '#fecaca', marginBottom: '4px' }}>🔴 Overdue</div>
+                </button>
+                <button
+                  onClick={() => setSelectedStatusFilter('overdue')}
+                  style={{
+                    backgroundColor: '#1a1a1a',
+                    padding: '20px',
+                    borderRadius: '12px',
+                    border: selectedStatusFilter === 'overdue' ? '3px solid #dc2626' : '2px solid #333',
+                    cursor: 'pointer',
+                    color: 'white',
+                    textAlign: 'left',
+                    transition: 'all 0.2s'
+                  }}
+                >
+                  <div style={{ fontSize: '12px', color: '#9ca3af', marginBottom: '4px' }}>🔴 Overdue</div>
                   <div style={{ fontSize: '32px', fontWeight: 'bold' }}>{stats.overdue}</div>
-                </div>
+                </button>
               </div>
 
               {/* Stats Grid - Row 2 */}
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '16px', marginBottom: '16px' }}>
-                <div style={{ backgroundColor: '#eab308', padding: '20px', borderRadius: '12px', border: '2px solid #facc15' }}>
-                  <div style={{ fontSize: '12px', color: '#fef3c7', marginBottom: '4px' }}>🟡 Due Today</div>
-                  <div style={{ fontSize: '32px', fontWeight: 'bold' }}>{stats.dueToday}</div>
-                </div>
-                <div style={{ backgroundColor: '#16a34a', padding: '20px', borderRadius: '12px', border: '2px solid #22c55e' }}>
-                  <div style={{ fontSize: '12px', color: '#bbf7d0', marginBottom: '4px' }}>🟢 Completed Today</div>
-                  <div style={{ fontSize: '32px', fontWeight: 'bold' }}>{stats.completedToday}</div>
-                </div>
-                <div style={{ backgroundColor: '#f97316', padding: '20px', borderRadius: '12px', border: '2px solid #fb923c' }}>
-                  <div style={{ fontSize: '12px', color: '#fed7aa', marginBottom: '4px' }}>🟠 Due Tomorrow</div>
-                  <div style={{ fontSize: '32px', fontWeight: 'bold' }}>{stats.dueTomorrow}</div>
-                </div>
                 <button
-                  onClick={() => setShowAddTaskModal(true)}
+                  onClick={() => setSelectedStatusFilter('dueToday')}
+                  style={{
+                    backgroundColor: '#1a1a1a',
+                    padding: '20px',
+                    borderRadius: '12px',
+                    border: selectedStatusFilter === 'dueToday' ? '3px solid #eab308' : '2px solid #333',
+                    cursor: 'pointer',
+                    color: 'white',
+                    textAlign: 'left',
+                    transition: 'all 0.2s'
+                  }}
+                >
+                  <div style={{ fontSize: '12px', color: '#9ca3af', marginBottom: '4px' }}>🟡 Due Today</div>
+                  <div style={{ fontSize: '32px', fontWeight: 'bold' }}>{stats.dueToday}</div>
+                </button>
+                <button
+                  onClick={() => setSelectedStatusFilter('completedToday')}
+                  style={{
+                    backgroundColor: '#1a1a1a',
+                    padding: '20px',
+                    borderRadius: '12px',
+                    border: selectedStatusFilter === 'completedToday' ? '3px solid #16a34a' : '2px solid #333',
+                    cursor: 'pointer',
+                    color: 'white',
+                    textAlign: 'left',
+                    transition: 'all 0.2s'
+                  }}
+                >
+                  <div style={{ fontSize: '12px', color: '#9ca3af', marginBottom: '4px' }}>🟢 Completed Today</div>
+                  <div style={{ fontSize: '32px', fontWeight: 'bold' }}>{stats.completedToday}</div>
+                </button>
+                <button
+                  onClick={() => setSelectedStatusFilter('dueTomorrow')}
+                  style={{
+                    backgroundColor: '#1a1a1a',
+                    padding: '20px',
+                    borderRadius: '12px',
+                    border: selectedStatusFilter === 'dueTomorrow' ? '3px solid #f97316' : '2px solid #333',
+                    cursor: 'pointer',
+                    color: 'white',
+                    textAlign: 'left',
+                    transition: 'all 0.2s'
+                  }}
+                >
+                  <div style={{ fontSize: '12px', color: '#9ca3af', marginBottom: '4px' }}>🟠 Due Tomorrow</div>
+                  <div style={{ fontSize: '32px', fontWeight: 'bold' }}>{stats.dueTomorrow}</div>
+                </button>
+                <button
+                  onClick={() => {
+                    setShowAddTaskModal(true)
+                    setTaskFormData({ due_date: new Date().toISOString().split('T')[0] })
+                  }}
                   style={{
                     backgroundColor: '#9333ea',
                     padding: '20px',
@@ -717,7 +1035,12 @@ function App() {
                     color: 'white',
                     cursor: 'pointer',
                     fontWeight: 'bold',
-                    fontSize: '16px'
+                    fontSize: '16px',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    gap: '8px'
                   }}
                 >
                   ➕ Add Task
@@ -732,7 +1055,7 @@ function App() {
                     onClick={() => setSelectedArea(area)}
                     style={{
                       padding: '16px',
-                      backgroundColor: selectedArea === area ? '#60a5fa' : '#2a2a2a',
+                      backgroundColor: selectedArea === area ? (area === 'All Areas' ? '#60a5fa' : getAreaColor(area as Area)) : '#2a2a2a',
                       color: selectedArea === area ? '#fff' : area === 'All Areas' ? '#60a5fa' : getAreaColor(area as Area),
                       border: 'none',
                       borderRadius: '8px',
@@ -772,36 +1095,190 @@ function App() {
 
               {/* Task List */}
               <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-                {filteredTasks.filter(t => isOverdue(t.due_date) && t.status !== 'Done').slice(0, 5).map((task) => (
+                {filteredTasks.sort((a, b) => {
+                  if (!a.due_date) return 1
+                  if (!b.due_date) return -1
+                  return new Date(a.due_date).getTime() - new Date(b.due_date).getTime()
+                }).map((task) => (
                   <div
                     key={task.id}
                     onDoubleClick={() => setEditingTask(task)}
                     style={{
-                      backgroundColor: getAreaColor(task.area as Area),
-                      padding: '16px',
+                      background: `${getAreaColor(task.area as Area)}66`,
+                      padding: '20px',
                       borderRadius: '12px',
-                      borderLeft: '6px solid #dc2626',
-                      cursor: 'pointer'
+                      border: `2px solid ${isOverdue(task.due_date) ? '#dc2626' : isToday(task.due_date) ? '#eab308' : isTomorrow(task.due_date) ? '#f97316' : '#6b7280'}`,
+                      cursor: 'pointer',
+                      display: 'flex',
+                      gap: '20px'
                     }}
                   >
-                    <div style={{ display: 'flex', gap: '12px', alignItems: 'start' }}>
-                      <input
-                        type="checkbox"
-                        checked={task.status === 'Done'}
-                        onChange={() => toggleTask(task.id, task.status)}
-                        style={{ width: '18px', height: '18px', marginTop: '2px', cursor: 'pointer' }}
-                      />
-                      <div style={{ flex: 1 }}>
-                        <div style={{ fontWeight: 'bold', fontSize: '16px', marginBottom: '4px' }}>{task.task_name}</div>
-                        <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', marginBottom: '8px' }}>
-                          <span style={{ backgroundColor: '#dc2626', padding: '4px 8px', borderRadius: '4px', fontSize: '12px' }}>OVERDUE</span>
-                          <span style={{ backgroundColor: 'rgba(0,0,0,0.3)', padding: '4px 8px', borderRadius: '4px', fontSize: '12px' }}>{task.area}</span>
-                          {task.task_type && <span style={{ backgroundColor: 'rgba(0,0,0,0.3)', padding: '4px 8px', borderRadius: '4px', fontSize: '12px' }}>{task.task_type}</span>}
+                    {/* Left Column - Date & Checkbox */}
+                    <div style={{
+                      display: 'flex',
+                      flexDirection: 'column',
+                      alignItems: 'center',
+                      gap: '16px',
+                      minWidth: '70px'
+                    }}>
+                      {/* Due Date Box */}
+                      <div
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          setDatePickerTask(task)
+                          setShowDatePicker(true)
+                        }}
+                        style={{
+                          borderRadius: '8px',
+                          padding: '10px 14px',
+                          backgroundColor: '#4a4a4a',
+                          border: `1px solid ${task.status === 'Done' ? '#10b981' : isOverdue(task.due_date) ? '#dc2626' : isToday(task.due_date) ? '#eab308' : 'white'}`,
+                          color: task.status === 'Done' ? '#10b981' : isOverdue(task.due_date) ? '#dc2626' : isToday(task.due_date) ? '#eab308' : 'white',
+                          fontSize: '12px',
+                          fontWeight: 'bold',
+                          textAlign: 'center',
+                          cursor: 'pointer',
+                          minWidth: '80px'
+                        }}
+                      >
+                        <div style={{ fontSize: '10px', marginBottom: '2px', opacity: 0.9 }}>
+                          {task.status === 'Done' ? 'COMPLETED' : isOverdue(task.due_date) ? 'OVERDUE' : isToday(task.due_date) ? 'DUE TODAY' : isTomorrow(task.due_date) ? 'DUE' : 'UPCOMING'}
                         </div>
-                        <div style={{ fontSize: '12px', marginTop: '8px', color: 'rgba(255,255,255,0.8)' }}>
-                          Hours Projected: {task.hours_projected || 0} | Hours Worked: 0
+                        <div style={{ fontSize: '16px', fontWeight: 'bold' }}>
+                          {task.status === 'Done' && task.completed_at
+                            ? (() => {
+                                const parts = task.completed_at.split('T')[0].split('-')
+                                const date = new Date(parseInt(parts[0]), parseInt(parts[1]) - 1, parseInt(parts[2]))
+                                return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
+                              })()
+                            : task.due_date ? (isTomorrow(task.due_date) ? 'Tomorrow' : isToday(task.due_date) ? 'Today' : (() => {
+                                const parts = task.due_date.split('T')[0].split('-')
+                                const date = new Date(parseInt(parts[0]), parseInt(parts[1]) - 1, parseInt(parts[2]))
+                                return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
+                              })()) : 'No Date'}
                         </div>
                       </div>
+
+                      {/* Completed Checkbox */}
+                      <div style={{
+                        display: 'flex',
+                        flexDirection: 'column',
+                        alignItems: 'center',
+                        gap: '6px'
+                      }}>
+                        <input
+                          type="checkbox"
+                          checked={task.status === 'Done'}
+                          onChange={() => toggleTask(task.id, task.status)}
+                          style={{
+                            width: '18px',
+                            height: '18px',
+                            cursor: 'pointer',
+                            accentColor: '#10b981'
+                          }}
+                        />
+                      </div>
+                    </div>
+
+                    {/* Task Content */}
+                    <div style={{ flex: 1 }}>
+                      <h3 style={{
+                        fontSize: '18px',
+                        fontWeight: 'bold',
+                        marginBottom: '12px',
+                        color: 'white',
+                        textDecoration: task.status === 'Done' ? 'line-through' : 'none'
+                      }}>
+                        {task.task_name}
+                      </h3>
+
+                      {/* Badges */}
+                      <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', marginBottom: '12px' }}>
+                        <span style={{
+                          backgroundColor: getAreaColor(task.area as Area),
+                          color: 'white',
+                          padding: '4px 12px',
+                          borderRadius: '12px',
+                          fontSize: '12px',
+                          fontWeight: '500'
+                        }}>
+                          {task.area}
+                        </span>
+                        {task.task_type && (
+                          <span style={{
+                            backgroundColor: '#f59e0b',
+                            color: 'white',
+                            padding: '4px 12px',
+                            borderRadius: '12px',
+                            fontSize: '12px',
+                            fontWeight: '500'
+                          }}>
+                            {task.task_type}
+                          </span>
+                        )}
+                        {task.priority && (
+                          <span style={{
+                            backgroundColor: task.priority === 'High' ? '#dc2626' : task.priority === 'Medium' ? '#f59e0b' : '#10b981',
+                            color: 'white',
+                            padding: '4px 12px',
+                            borderRadius: '12px',
+                            fontSize: '12px',
+                            fontWeight: '500'
+                          }}>
+                            ⏰ {task.due_date ? new Date(task.due_date).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true }).toUpperCase() : ''}
+                          </span>
+                        )}
+                        <span style={{
+                          backgroundColor: '#16a34a',
+                          color: 'white',
+                          padding: '4px 12px',
+                          borderRadius: '12px',
+                          fontSize: '12px',
+                          fontWeight: '500'
+                        }}>
+                          {task.effort_level || 'Money Maker: $$$ MoneyMaker'}
+                        </span>
+                      </div>
+
+                      {/* Hours Info */}
+                      <div style={{
+                        display: 'flex',
+                        gap: '20px',
+                        fontSize: '13px',
+                        color: '#9ca3af'
+                      }}>
+                        <div>Hours Projected: {task.hours_projected || 1}</div>
+                        <div>Hours Worked: {task.hours_worked || 0}</div>
+                      </div>
+
+                      {/* Status */}
+                      <div style={{
+                        marginTop: '8px',
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '6px'
+                      }}>
+                        <span style={{
+                          width: '8px',
+                          height: '8px',
+                          borderRadius: '50%',
+                          backgroundColor: task.status === 'Done' ? '#10b981' : '#dc2626',
+                          display: 'inline-block'
+                        }}></span>
+                        <span style={{ fontSize: '13px', color: '#9ca3af' }}>{task.status || 'Not started'}</span>
+                      </div>
+
+                      {/* Description hint */}
+                      {task.description && (
+                        <div style={{
+                          marginTop: '8px',
+                          fontSize: '13px',
+                          color: '#6b7280',
+                          fontStyle: 'italic'
+                        }}>
+                          Click to add description...
+                        </div>
+                      )}
                     </div>
                   </div>
                 ))}
@@ -817,39 +1294,224 @@ function App() {
                 borderRadius: '12px',
                 marginBottom: '16px'
               }}>
-                <h3 style={{ marginBottom: '16px', fontSize: '18px' }}>Deep Work Session ▲</h3>
+                <h3 style={{ marginBottom: '0px', fontSize: '18px', textAlign: 'center', color: '#fbbf24' }}>Deep Work Session</h3>
+
+                <div style={{ fontSize: '48px', textAlign: 'center', margin: '0 0 16px 0', fontWeight: 'bold', color: '#fbbf24' }}>
+                  {formatTime(timerSeconds)}
+                </div>
+
+                {/* Task Dropdown (Searchable) */}
+                <div style={{ marginBottom: '16px', position: 'relative' }}>
+                  <label style={{ display: 'block', marginBottom: '8px', fontSize: '14px' }}>Task (Optional)</label>
+                  <input
+                    type="text"
+                    placeholder="Search tasks..."
+                    value={dwTaskSearchTerm}
+                    onChange={(e) => {
+                      setDwTaskSearchTerm(e.target.value)
+                      setShowDwTaskDropdown(true)
+                    }}
+                    onFocus={() => setShowDwTaskDropdown(true)}
+                    onBlur={() => setTimeout(() => setShowDwTaskDropdown(false), 200)}
+                    style={{
+                      width: '100%',
+                      padding: '10px',
+                      backgroundColor: '#1a1a1a',
+                      color: 'white',
+                      border: '1px solid #444',
+                      borderRadius: '6px',
+                      fontSize: '14px'
+                    }}
+                  />
+                  {showDwTaskDropdown && dwTaskSearchTerm && tasks.filter(t => t.status !== 'Done' && t.task_name.toLowerCase().includes(dwTaskSearchTerm.toLowerCase())).length > 0 && (
+                    <div style={{
+                      position: 'absolute',
+                      backgroundColor: '#1a1a1a',
+                      border: '1px solid #444',
+                      borderRadius: '6px',
+                      marginTop: '4px',
+                      maxHeight: '200px',
+                      overflowY: 'auto',
+                      width: '100%',
+                      zIndex: 1000
+                    }}>
+                      {tasks
+                        .filter(t => t.status !== 'Done' && t.task_name.toLowerCase().includes(dwTaskSearchTerm.toLowerCase()))
+                        .sort((a, b) => a.area.localeCompare(b.area))
+                        .slice(0, 10)
+                        .map(task => (
+                          <div
+                            key={task.id}
+                            onClick={() => {
+                              setDwSessionTask(task)
+                              setDwSessionFocusArea(task.area)
+                              setDwSessionTaskType(task.task_type)
+                              setDwTaskSearchTerm(task.task_name)
+                              setShowDwTaskDropdown(false)
+                            }}
+                            style={{
+                              padding: '10px',
+                              cursor: 'pointer',
+                              borderBottom: '1px solid #333',
+                              borderLeft: `4px solid ${getAreaColor(task.area)}`,
+                              fontSize: '14px'
+                            }}
+                            onMouseEnter={(e) => e.currentTarget.style.backgroundColor = '#2a2a2a'}
+                            onMouseLeave={(e) => e.currentTarget.style.backgroundColor = 'transparent'}
+                          >
+                            <div style={{ fontWeight: '500' }}>{task.task_name}</div>
+                            <div style={{ fontSize: '12px', color: getAreaColor(task.area), marginTop: '2px' }}>
+                              {task.area} • {task.task_type}
+                            </div>
+                          </div>
+                        ))}
+                    </div>
+                  )}
+                </div>
+
+                {/* Focus Area */}
                 <div style={{ marginBottom: '16px' }}>
                   <label style={{ display: 'block', marginBottom: '8px', fontSize: '14px' }}>Focus Area</label>
-                  <select style={{
+                  <select
+                    value={dwSessionFocusArea}
+                    onChange={(e) => {
+                      setDwSessionFocusArea(e.target.value as Area)
+                      setDwSessionTaskType('')
+                    }}
+                    style={{
+                      width: '100%',
+                      padding: '10px',
+                      backgroundColor: '#1a1a1a',
+                      color: 'white',
+                      border: '1px solid #444',
+                      borderRadius: '6px',
+                      fontSize: '14px'
+                    }}>
+                    <option value="">Select focus area</option>
+                    <option value="Full Stack">Full Stack</option>
+                    <option value="Huge Capital">Huge Capital</option>
+                    <option value="S4">S4</option>
+                    <option value="808">808</option>
+                    <option value="Personal">Personal</option>
+                    <option value="Golf">Golf</option>
+                    <option value="Health">Health</option>
+                  </select>
+                </div>
+
+                {/* Task Type */}
+                {dwSessionFocusArea && (
+                  <div style={{ marginBottom: '16px' }}>
+                    <label style={{ display: 'block', marginBottom: '8px', fontSize: '14px' }}>Task Type</label>
+                    <select
+                      value={dwSessionTaskType}
+                      onChange={(e) => setDwSessionTaskType(e.target.value)}
+                      style={{
+                        width: '100%',
+                        padding: '10px',
+                        backgroundColor: '#1a1a1a',
+                        color: 'white',
+                        border: '1px solid #444',
+                        borderRadius: '6px',
+                        fontSize: '14px'
+                      }}>
+                      <option value="">Select task type</option>
+                      {getTaskTypesByArea(dwSessionFocusArea).map(type => (
+                        <option key={type} value={type}>{type}</option>
+                      ))}
+                    </select>
+                  </div>
+                )}
+
+                {!timerRunning ? (
+                  <button
+                    onClick={startTimer}
+                    style={{
+                      width: '100%',
+                      padding: '16px',
+                      backgroundColor: '#3b82f6',
+                      color: 'white',
+                      border: 'none',
+                      borderRadius: '8px',
+                      cursor: 'pointer',
+                      fontWeight: 'bold',
+                      fontSize: '16px'
+                    }}>
+                    ▶ Start Session
+                  </button>
+                ) : (
+                  <div style={{ display: 'flex', gap: '8px' }}>
+                    <button
+                      onClick={saveSession}
+                      style={{
+                        flex: 1,
+                        padding: '16px',
+                        backgroundColor: '#10b981',
+                        color: 'white',
+                        border: 'none',
+                        borderRadius: '8px',
+                        cursor: 'pointer',
+                        fontWeight: 'bold',
+                        fontSize: '16px'
+                      }}>
+                      💾 Save
+                    </button>
+                    <button
+                      onClick={pauseTimer}
+                      style={{
+                        flex: 1,
+                        padding: '16px',
+                        backgroundColor: timerPaused ? '#3b82f6' : '#eab308',
+                        color: 'white',
+                        border: 'none',
+                        borderRadius: '8px',
+                        cursor: 'pointer',
+                        fontWeight: 'bold',
+                        fontSize: '16px'
+                      }}>
+                      {timerPaused ? '▶ Resume' : '⏸ Pause'}
+                    </button>
+                    <button
+                      onClick={cancelTimerSession}
+                      style={{
+                        flex: 1,
+                        padding: '16px',
+                        backgroundColor: '#dc2626',
+                        color: 'white',
+                        border: 'none',
+                        borderRadius: '8px',
+                        cursor: 'pointer',
+                        fontWeight: 'bold',
+                        fontSize: '16px'
+                      }}>
+                      🗑 Delete
+                    </button>
+                  </div>
+                )}
+              </div>
+
+              {/* Task Brain Dump */}
+              <div style={{
+                backgroundColor: '#2a2a2a',
+                padding: '20px',
+                borderRadius: '12px',
+                marginBottom: '16px'
+              }}>
+                <h3 style={{ marginBottom: '16px', fontSize: '18px' }}>Task Brain Dump 🧠</h3>
+                <textarea
+                  placeholder="Quick notes, ideas, tasks to add later..."
+                  style={{
                     width: '100%',
-                    padding: '10px',
+                    minHeight: '150px',
+                    padding: '12px',
                     backgroundColor: '#1a1a1a',
                     color: 'white',
                     border: '1px solid #444',
-                    borderRadius: '6px'
-                  }}>
-                    <option>Select focus area</option>
-                    <option>Full Stack</option>
-                    <option>Huge Capital</option>
-                    <option>S4</option>
-                  </select>
-                </div>
-                <div style={{ fontSize: '48px', textAlign: 'center', margin: '32px 0', fontWeight: 'bold' }}>
-                  00:00
-                </div>
-                <button style={{
-                  width: '100%',
-                  padding: '16px',
-                  backgroundColor: '#3b82f6',
-                  color: 'white',
-                  border: 'none',
-                  borderRadius: '8px',
-                  cursor: 'pointer',
-                  fontWeight: 'bold',
-                  fontSize: '16px'
-                }}>
-                  ▶ Start Session
-                </button>
+                    borderRadius: '6px',
+                    fontSize: '14px',
+                    fontFamily: 'inherit',
+                    resize: 'vertical'
+                  }}
+                />
               </div>
 
               {/* Today's Schedule */}
@@ -1559,6 +2221,7 @@ function App() {
           </div>
         )}
       </div>
+    </div>
 
       {/* Edit Deep Work Session Modal */}
       {editingSessionId && (
@@ -2026,7 +2689,7 @@ function App() {
               <div>
                 <label style={{ color: '#9ca3af', display: 'block', marginBottom: '8px', fontSize: '14px' }}>Area</label>
                 <select
-                  value={taskFormData.area || (editingTask?.area || 'Personal')}
+                  value={taskFormData.area || (editingTask?.area || '')}
                   onChange={(e) => setTaskFormData({ ...taskFormData, area: e.target.value as Area })}
                   style={{
                     width: '100%',
@@ -2039,6 +2702,7 @@ function App() {
                     outline: 'none'
                   }}
                 >
+                  <option value="">Select area...</option>
                   <option value="Personal">Personal</option>
                   <option value="Full Stack">Full Stack</option>
                   <option value="Huge Capital">Huge Capital</option>
@@ -2050,8 +2714,7 @@ function App() {
               </div>
               <div>
                 <label style={{ color: '#9ca3af', display: 'block', marginBottom: '8px', fontSize: '14px' }}>Type</label>
-                <input
-                  type="text"
+                <select
                   value={taskFormData.task_type || (editingTask?.task_type || '')}
                   onChange={(e) => setTaskFormData({ ...taskFormData, task_type: e.target.value })}
                   style={{
@@ -2064,8 +2727,79 @@ function App() {
                     fontSize: '14px',
                     outline: 'none'
                   }}
-                  placeholder="Select type..."
-                />
+                >
+                  <option value="">Select type...</option>
+                  {(taskFormData.area || editingTask?.area) === 'Health' && (
+                    <>
+                      <option value="Admin">Admin</option>
+                      <option value="Meditation">Meditation</option>
+                      <option value="Workout">Workout</option>
+                      <option value="Walk">Walk</option>
+                      <option value="Yoga">Yoga</option>
+                    </>
+                  )}
+                  {(taskFormData.area || editingTask?.area) === 'S4' && (
+                    <>
+                      <option value="Data">Data</option>
+                      <option value="Marketing">Marketing</option>
+                      <option value="New Build">New Build</option>
+                      <option value="Update Build">Update Build</option>
+                      <option value="Sales">Sales</option>
+                      <option value="Planning">Planning</option>
+                    </>
+                  )}
+                  {(taskFormData.area || editingTask?.area) === 'Huge Capital' && (
+                    <>
+                      <option value="Admin">Admin</option>
+                      <option value="New Build">New Build</option>
+                      <option value="Update Build">Update Build</option>
+                      <option value="Planning">Planning</option>
+                    </>
+                  )}
+                  {(taskFormData.area || editingTask?.area) === 'Golf' && (
+                    <>
+                      <option value="Content">Content</option>
+                      <option value="Equipment">Equipment</option>
+                      <option value="Practice">Practice</option>
+                      <option value="Golfing">Golfing</option>
+                      <option value="Admin">Admin</option>
+                    </>
+                  )}
+                  {(taskFormData.area || editingTask?.area) === 'Full Stack' && (
+                    <>
+                      <option value="Admin">Admin</option>
+                      <option value="Internal Build">Internal Build</option>
+                      <option value="Client Build">Client Build</option>
+                      <option value="Team">Team</option>
+                      <option value="Internal Update">Internal Update</option>
+                      <option value="Client Update">Client Update</option>
+                      <option value="Marketing">Marketing</option>
+                      <option value="Sales">Sales</option>
+                    </>
+                  )}
+                  {(taskFormData.area || editingTask?.area) === '808' && (
+                    <>
+                      <option value="Online">Online</option>
+                      <option value="Artists">Artists</option>
+                      <option value="Cost Savings">Cost Savings</option>
+                      <option value="Customer Service">Customer Service</option>
+                      <option value="Data">Data</option>
+                      <option value="Fulfillment">Fulfillment</option>
+                      <option value="Automation">Automation</option>
+                    </>
+                  )}
+                  {(taskFormData.area || editingTask?.area) === 'Personal' && (
+                    <>
+                      <option value="Arya">Arya</option>
+                      <option value="Car">Car</option>
+                      <option value="Cheypow">Cheypow</option>
+                      <option value="Finances">Finances</option>
+                      <option value="Friends">Friends</option>
+                      <option value="House">House</option>
+                      <option value="Life">Life</option>
+                    </>
+                  )}
+                </select>
               </div>
             </div>
 
@@ -2073,29 +2807,26 @@ function App() {
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px', marginBottom: '16px' }}>
               <div>
                 <label style={{ color: '#9ca3af', display: 'block', marginBottom: '8px', fontSize: '14px' }}>Priority</label>
-                <select
-                  value={taskFormData.priority || (editingTask?.priority || 'Medium')}
-                  onChange={(e) => setTaskFormData({ ...taskFormData, priority: e.target.value })}
-                  style={{
-                    width: '100%',
-                    padding: '10px 12px',
-                    backgroundColor: '#1a1f2e',
-                    border: '1px solid #2d3748',
-                    borderRadius: '6px',
-                    color: 'white',
-                    fontSize: '14px',
-                    outline: 'none'
-                  }}
-                >
-                  <option value="Low">Low</option>
-                  <option value="Medium">Medium</option>
-                  <option value="High">High</option>
-                </select>
+                <div style={{ display: 'flex', gap: '12px', alignItems: 'center' }}>
+                  {['Low', 'Medium', 'High'].map((level) => (
+                    <label key={level} style={{ display: 'flex', alignItems: 'center', gap: '6px', cursor: 'pointer', color: 'white' }}>
+                      <input
+                        type="radio"
+                        name="priority"
+                        value={level}
+                        checked={(taskFormData.priority || editingTask?.priority) === level}
+                        onChange={(e) => setTaskFormData({ ...taskFormData, priority: e.target.value })}
+                        style={{ cursor: 'pointer' }}
+                      />
+                      <span style={{ fontSize: '14px' }}>{level}</span>
+                    </label>
+                  ))}
+                </div>
               </div>
               <div>
                 <label style={{ color: '#9ca3af', display: 'block', marginBottom: '8px', fontSize: '14px' }}>Money Maker</label>
                 <select
-                  value={taskFormData.effort_level || (editingTask?.effort_level || '$ Lil Money')}
+                  value={taskFormData.effort_level || (editingTask?.effort_level || '')}
                   onChange={(e) => setTaskFormData({ ...taskFormData, effort_level: e.target.value })}
                   style={{
                     width: '100%',
@@ -2108,6 +2839,7 @@ function App() {
                     outline: 'none'
                   }}
                 >
+                  <option value="">Select money maker...</option>
                   <option value="$ Lil Money">$ Lil Money</option>
                   <option value="$$ Some Money">$$ Some Money</option>
                   <option value="$$$ Big Money">$$$ Big Money</option>
@@ -2180,78 +2912,201 @@ function App() {
             </div>
 
             {/* Action Buttons */}
-            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '12px' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', gap: '12px' }}>
+              {editingTask && (
+                <button
+                  onClick={() => deleteTask(editingTask.id)}
+                  style={{
+                    padding: '10px 20px',
+                    backgroundColor: '#dc2626',
+                    border: 'none',
+                    borderRadius: '6px',
+                    color: 'white',
+                    cursor: 'pointer',
+                    fontWeight: '500',
+                    fontSize: '14px'
+                  }}
+                >
+                  Delete Task
+                </button>
+              )}
+              <div style={{ marginLeft: 'auto', display: 'flex', gap: '12px' }}>
+                <button
+                  onClick={() => {
+                    setEditingTask(null)
+                    setShowAddTaskModal(false)
+                    setTaskFormData({})
+                  }}
+                  style={{
+                    padding: '10px 20px',
+                    backgroundColor: '#374151',
+                    border: 'none',
+                    borderRadius: '6px',
+                    color: '#e5e7eb',
+                    cursor: 'pointer',
+                    fontWeight: '500',
+                    fontSize: '14px'
+                  }}
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={async () => {
+                    if (editingTask) {
+                      // Update task
+                      await supabase.from('TG To Do List').update({
+                        task_name: taskFormData.task_name || editingTask.task_name,
+                        description: taskFormData.description || editingTask.description,
+                        area: taskFormData.area || editingTask.area,
+                        task_type: taskFormData.task_type || editingTask.task_type,
+                        priority: taskFormData.priority || editingTask.priority,
+                        effort_level: taskFormData.effort_level || editingTask.effort_level,
+                        due_date: taskFormData.due_date || editingTask.due_date,
+                        'Hours Projected': taskFormData.hours_projected ?? editingTask.hours_projected,
+                        'Hours Worked': taskFormData.hours_worked ?? editingTask.hours_worked
+                      }).eq('id', editingTask.id)
+                      if (session) fetchTasks(session.user.id)
+                    } else {
+                      // Create new task
+                      await supabase.from('TG To Do List').insert({
+                        task_name: taskFormData.task_name,
+                        description: taskFormData.description || '',
+                        area: taskFormData.area || 'Personal',
+                        task_type: taskFormData.task_type || '',
+                        status: 'Not started',
+                        automation: 'Manual',
+                        priority: taskFormData.priority || 'Medium',
+                        effort_level: taskFormData.effort_level || '$ Lil Money',
+                        due_date: taskFormData.due_date || null,
+                        user_id: session?.user.id,
+                        'Hours Projected': taskFormData.hours_projected || 0,
+                        'Hours Worked': taskFormData.hours_worked || 0
+                      })
+                      if (session) fetchTasks(session.user.id)
+                    }
+                    setEditingTask(null)
+                    setShowAddTaskModal(false)
+                    setTaskFormData({})
+                  }}
+                  style={{
+                    padding: '10px 20px',
+                    backgroundColor: '#60a5fa',
+                    border: 'none',
+                    borderRadius: '6px',
+                    color: 'white',
+                    cursor: 'pointer',
+                    fontWeight: '500',
+                    fontSize: '14px'
+                  }}
+                >
+                  {editingTask ? 'Update Task' : 'Create Task'}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Date Picker Modal */}
+      {showDatePicker && datePickerTask && (
+        <div
+          style={{
+            position: 'fixed',
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            backgroundColor: 'rgba(0, 0, 0, 0.7)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            zIndex: 1000
+          }}
+          onClick={() => {
+            setShowDatePicker(false)
+            setDatePickerTask(null)
+          }}
+        >
+          <div
+            style={{
+              backgroundColor: '#0f1419',
+              borderRadius: '12px',
+              padding: '28px',
+              width: '400px',
+              border: 'none'
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '24px' }}>
+              <h2 style={{ color: 'white', fontSize: '20px', fontWeight: '600', margin: 0 }}>
+                {datePickerTask.status === 'Done' ? 'Change Completion Date' : 'Change Due Date'}
+              </h2>
               <button
                 onClick={() => {
-                  setEditingTask(null)
-                  setShowAddTaskModal(false)
-                  setTaskFormData({})
+                  setShowDatePicker(false)
+                  setDatePickerTask(null)
                 }}
                 style={{
-                  padding: '10px 20px',
-                  backgroundColor: '#374151',
+                  background: 'none',
                   border: 'none',
-                  borderRadius: '6px',
-                  color: '#e5e7eb',
+                  color: '#888',
+                  fontSize: '28px',
                   cursor: 'pointer',
-                  fontWeight: '500',
-                  fontSize: '14px'
+                  padding: '0',
+                  lineHeight: '1'
                 }}
               >
-                Cancel
-              </button>
-              <button
-                onClick={async () => {
-                  if (editingTask) {
-                    // Update task
-                    await supabase.from('TG To Do List').update({
-                      task_name: taskFormData.task_name || editingTask.task_name,
-                      description: taskFormData.description || editingTask.description,
-                      area: taskFormData.area || editingTask.area,
-                      task_type: taskFormData.task_type || editingTask.task_type,
-                      priority: taskFormData.priority || editingTask.priority,
-                      effort_level: taskFormData.effort_level || editingTask.effort_level,
-                      due_date: taskFormData.due_date || editingTask.due_date,
-                      'Hours Projected': taskFormData.hours_projected ?? editingTask.hours_projected,
-                      'Hours Worked': taskFormData.hours_worked ?? editingTask.hours_worked
-                    }).eq('id', editingTask.id)
-                    if (session) fetchTasks(session.user.id)
-                  } else {
-                    // Create new task
-                    await supabase.from('TG To Do List').insert({
-                      task_name: taskFormData.task_name,
-                      description: taskFormData.description || '',
-                      area: taskFormData.area || 'Personal',
-                      task_type: taskFormData.task_type || '',
-                      status: 'Not started',
-                      automation: 'Manual',
-                      priority: taskFormData.priority || 'Medium',
-                      effort_level: taskFormData.effort_level || '$ Lil Money',
-                      due_date: taskFormData.due_date || null,
-                      user_id: session?.user.id,
-                      'Hours Projected': taskFormData.hours_projected || 0,
-                      'Hours Worked': taskFormData.hours_worked || 0
-                    })
-                    if (session) fetchTasks(session.user.id)
-                  }
-                  setEditingTask(null)
-                  setShowAddTaskModal(false)
-                  setTaskFormData({})
-                }}
-                style={{
-                  padding: '10px 20px',
-                  backgroundColor: '#60a5fa',
-                  border: 'none',
-                  borderRadius: '6px',
-                  color: 'white',
-                  cursor: 'pointer',
-                  fontWeight: '500',
-                  fontSize: '14px'
-                }}
-              >
-                {editingTask ? 'Update Task' : 'Create Task'}
+                ×
               </button>
             </div>
+
+            <div style={{ marginBottom: '24px' }}>
+              <label style={{ color: '#9ca3af', display: 'block', marginBottom: '8px', fontSize: '14px' }}>
+                Task: {datePickerTask.task_name}
+              </label>
+              <label style={{ color: '#9ca3af', display: 'block', marginBottom: '8px', fontSize: '14px' }}>
+                {datePickerTask.status === 'Done' ? 'New Completion Date' : 'New Due Date'}
+              </label>
+              <input
+                type="date"
+                defaultValue={datePickerTask.status === 'Done' ? (datePickerTask.completed_at?.split('T')[0] || '') : (datePickerTask.due_date || '')}
+                onChange={(e) => {
+                  if (e.target.value) {
+                    updateTaskDueDate(datePickerTask.id, e.target.value, datePickerTask.status === 'Done')
+                  }
+                }}
+                style={{
+                  width: '100%',
+                  padding: '12px',
+                  backgroundColor: '#1a1f2e',
+                  border: '1px solid #2d3748',
+                  borderRadius: '6px',
+                  color: 'white',
+                  fontSize: '16px',
+                  outline: 'none'
+                }}
+              />
+            </div>
+
+            <button
+              onClick={() => {
+                setShowDatePicker(false)
+                setDatePickerTask(null)
+              }}
+              style={{
+                width: '100%',
+                padding: '12px',
+                backgroundColor: '#60a5fa',
+                border: 'none',
+                borderRadius: '6px',
+                color: 'white',
+                cursor: 'pointer',
+                fontWeight: '500',
+                fontSize: '14px'
+              }}
+            >
+              Close
+            </button>
           </div>
         </div>
       )}
@@ -2260,3 +3115,4 @@ function App() {
 }
 
 export default App
+

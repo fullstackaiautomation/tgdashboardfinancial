@@ -3,6 +3,7 @@ import Sidebar from './Sidebar'
 import TodoList from './TodoList'
 import Header from './Header'
 import FinanceDashboard from './finance/FinanceDashboard'
+import ContentLibrary from './ContentLibrary'
 
 const Dashboard = () => {
   const [activeSection, setActiveSection] = useState('todos')
@@ -31,6 +32,7 @@ const Dashboard = () => {
                 <p className="text-gray-600">Your calendar will appear here.</p>
               </div>
             )}
+            {activeSection === 'content' && <ContentLibrary />}
             {activeSection === 'finance' && <FinanceDashboard />}
             {activeSection === 'health' && (
               <div className="bg-white rounded-lg shadow-sm p-8">

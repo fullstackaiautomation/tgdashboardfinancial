@@ -4,7 +4,8 @@ import {
   Calendar,
   DollarSign,
   Heart,
-  Settings
+  Settings,
+  BookMarked
 } from 'lucide-react'
 
 interface SidebarProps {
@@ -17,6 +18,7 @@ const Sidebar = ({ activeSection, setActiveSection }: SidebarProps) => {
     { id: 'overview', label: 'Overview', icon: LayoutDashboard },
     { id: 'todos', label: 'To-Do List', icon: CheckSquare },
     { id: 'calendar', label: 'Calendar', icon: Calendar },
+    { id: 'content', label: 'Content Library', icon: BookMarked },
     { id: 'finance', label: 'Finance', icon: DollarSign },
     { id: 'health', label: 'Health & Fitness', icon: Heart },
     { id: 'settings', label: 'Settings', icon: Settings },
