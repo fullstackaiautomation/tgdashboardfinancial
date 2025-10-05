@@ -2,6 +2,9 @@ import { useState, useEffect } from 'react'
 import { supabase } from './lib/supabase'
 
 type Area = 'Full Stack' | 'S4' | '808' | 'Personal' | 'Huge Capital' | 'Golf' | 'Health'
+type EffortLevel = '$$$ MoneyMaker' | '$ Lil Money' | '-$ Save Dat Money' | ':( Pointless' | '8) JusVibin'
+type Priority = 'Low' | 'Medium' | 'High'
+type RecurringType = 'none' | 'daily' | 'daily_weekdays' | 'weekly' | 'monthly' | 'custom'
 
 interface Task {
   id: string
@@ -10,15 +13,15 @@ interface Task {
   area: Area
   task_type: string
   status: string
-  priority: string
+  priority: Priority | undefined
   due_date: string | null
   completed_at: string | null
   hours_projected: number | null
-  effort_level: string
+  effort_level: EffortLevel | undefined
   updated_at: string | null
-  hours_worked: number | null
+  hours_worked: number | undefined
   recurring_template: string | null
-  recurring_type: string | null
+  recurring_type: RecurringType | undefined
 }
 
 function App() {

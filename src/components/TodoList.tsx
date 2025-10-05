@@ -85,39 +85,6 @@ const TodoList = () => {
     }
   }
 
-  const addTodo = async () => {
-    if (!newTodoText.trim() || !userId) return
-
-    try {
-      const { error } = await supabase
-        .from('TG To Do List')
-        .insert({
-          task_name: newTodoText,
-          description: '',
-          area: selectedArea === 'All Areas' ? 'Personal' : selectedArea,
-          task_type: '',
-          status: 'Not started',
-          automation: 'Manual',
-          priority: 'Medium',
-          effort_level: '$ Lil Money',
-          due_date: new Date().toISOString(),
-          user_id: userId,
-          recurring_type: 'none',
-          recurring_interval: 1,
-          is_recurring_template: false
-        })
-        .select()
-        .single()
-
-      if (error) throw error
-
-      setNewTodoText('')
-      await fetchTasks()
-    } catch (error) {
-      console.error('Error adding task:', error)
-    }
-  }
-
   const toggleTodo = async (taskId: string, currentStatus: string) => {
     try {
       const newStatus = currentStatus === 'Done' ? 'Not started' : 'Done'

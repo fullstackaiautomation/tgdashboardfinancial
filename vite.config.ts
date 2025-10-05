@@ -6,7 +6,7 @@ export default defineConfig({
   plugins: [react()],
   base: process.env.NODE_ENV === 'production' ? '/tgdashboard/' : '/',
   server: {
-    port: 4000,
-    strictPort: false, // If 4000 is taken, will try 4001, 4002, etc.
+    port: 5000,
+    strictPort: false, // If 5000 is taken, will try 5001, 5002, etc.
   },
 })
