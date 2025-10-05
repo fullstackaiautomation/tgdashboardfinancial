@@ -159,6 +159,8 @@ const TodoList = () => {
 
     // Filter by status
     const now = new Date()
+    now.setHours(0, 0, 0, 0) // Reset to start of day for accurate comparison
+
     switch (filter) {
       case 'active':
         filtered = filtered.filter(task => task.status !== 'Done')
@@ -182,9 +184,12 @@ const TodoList = () => {
         )
         break
       case 'overdue':
-        filtered = filtered.filter(task =>
-          task.due_date && task.due_date < now && !isToday(task.due_date) && task.status !== 'Done'
-        )
+        filtered = filtered.filter(task => {
+          if (!task.due_date || task.status === 'Done') return false
+          const dueDate = new Date(task.due_date)
+          dueDate.setHours(0, 0, 0, 0)
+          return dueDate < now && !isToday(task.due_date)
+        })
         break
       case 'recurring':
         filtered = filtered.filter(task =>
@@ -202,6 +207,8 @@ const TodoList = () => {
       : tasks.filter(t => t.area === selectedArea)
 
     const now = new Date()
+    now.setHours(0, 0, 0, 0)
+
     return {
       total: areaFilteredTasks.length,
       active: areaFilteredTasks.filter(t => t.status !== 'Done').length,
@@ -209,7 +216,12 @@ const TodoList = () => {
       completedToday: areaFilteredTasks.filter(t => t.status === 'Done' && t.completed_at && isToday(t.completed_at)).length,
       today: areaFilteredTasks.filter(t => t.due_date && isToday(t.due_date) && t.status !== 'Done').length,
       tomorrow: areaFilteredTasks.filter(t => t.due_date && isTomorrow(t.due_date) && t.status !== 'Done').length,
-      overdue: areaFilteredTasks.filter(t => t.due_date && t.due_date < now && !isToday(t.due_date) && t.status !== 'Done').length,
+      overdue: areaFilteredTasks.filter(t => {
+        if (!t.due_date || t.status === 'Done') return false
+        const dueDate = new Date(t.due_date)
+        dueDate.setHours(0, 0, 0, 0)
+        return dueDate < now && !isToday(t.due_date)
+      }).length,
       recurring: areaFilteredTasks.filter(t => t.recurring_type && t.recurring_type !== 'none').length,
     }
   }, [tasks, selectedArea])
