@@ -1,8 +1,8 @@
 import { useState, useEffect, useMemo } from 'react'
 import { Plus, Check, Trash2, Calendar as CalendarIcon } from 'lucide-react'
 import { supabase } from '../lib/supabase'
-import { Task, Area } from '../types/task.tsx'
-import { format, isToday, isTomorrow } from 'date-fns'
+import type { Task, Area } from '../types/task'
+import { format, isToday, isTomorrow, isAfter } from 'date-fns'
 
 const TodoList = () => {
   const [tasks, setTasks] = useState<Task[]>([])
