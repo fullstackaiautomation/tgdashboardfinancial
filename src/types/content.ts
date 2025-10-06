@@ -2,6 +2,7 @@ export type ContentSource = 'Twitter' | 'YouTube' | 'Instagram' | 'Article' | 'P
 
 export type ContentCategory =
   | 'Full Stack Development'
+  | 'AI Build'
   | 'Business & Entrepreneurship'
   | 'Finance & Investing'
   | 'Marketing & Sales'
@@ -13,7 +14,7 @@ export type ContentCategory =
   | 'Leadership'
   | 'Other'
 
-export type ContentStatus = 'To Watch' | 'In Progress' | 'Completed' | 'Implementing' | 'Archived'
+export type ContentStatus = 'To Watch' | 'In Progress' | 'Completed' | 'Implementing' | 'Archived' | 'Vault'
 
 export type ContentPriority = 'High' | 'Medium' | 'Low'
 
@@ -22,6 +23,7 @@ export interface ContentItem {
   user_id: string
   title: string
   url: string
+  thumbnail_url?: string
   source: ContentSource
   category: ContentCategory
   subcategories?: string[]

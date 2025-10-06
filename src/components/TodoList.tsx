@@ -13,7 +13,9 @@ const TodoList = () => {
   const [editingTask, setEditingTask] = useState<Task | null>(null)
   const [showAddModal, setShowAddModal] = useState(false)
   const [editFormData, setEditFormData] = useState<Partial<Task>>({})
+  const [editingField, setEditingField] = useState<{taskId: string, field: string} | null>(null)
 
+  // Inline editing state
   // Debug: Log when filter changes
   useEffect(() => {
     console.log('Filter changed to:', filter)
@@ -179,6 +181,37 @@ const TodoList = () => {
     }
   }
 
+  const updateTaskField = async (taskId: string, field: string, value: any) => {
+    try {
+      const updateData: any = {}
+
+      // Map field names to database column names
+      if (field === 'hours_projected') {
+        updateData['Hours Projected'] = value ? Number(value) : null
+      } else if (field === 'hours_worked') {
+        updateData['Hours Worked'] = value ? Number(value) : null
+      } else {
+        updateData[field] = value
+      }
+
+      const { error } = await supabase
+        .from('TG To Do List')
+        .update(updateData)
+        .eq('id', taskId)
+
+      if (error) throw error
+
+      // Update local state
+      setTasks(prev => prev.map(task =>
+        task.id === taskId ? { ...task, [field]: value } : task
+      ))
+
+      setEditingField(null)
+    } catch (error) {
+      console.error('Error updating task field:', error)
+    }
+  }
+
   const createTask = async () => {
     if (!userId || !editFormData.task_name) return
 
@@ -301,6 +334,36 @@ const TodoList = () => {
         break
     }
 
+    // Sort tasks: Primary by scheduled_start, Secondary by Area priority
+    const areaPriority: Record<Area, number> = {
+      'Full Stack': 1,
+      'Huge Capital': 2,
+      'S4': 3,
+      'Personal': 4,
+      '808': 5,
+      'Health': 6,
+      'Golf': 7
+    }
+
+    filtered.sort((a, b) => {
+      console.log("Comparing:", a.task_name, "("+a.area+", scheduled:", a.scheduled_start ? "YES" : "NO", ") vs", b.task_name, "("+b.area+", scheduled:", b.scheduled_start ? "YES" : "NO", ")")
+      // Primary sort: scheduled_start (ascending - earliest first)
+      if (a.scheduled_start && b.scheduled_start) {
+        const timeDiff = a.scheduled_start.getTime() - b.scheduled_start.getTime()
+        if (timeDiff !== 0) return timeDiff
+        // If same scheduled time, use area priority
+        return areaPriority[a.area] - areaPriority[b.area]
+      }
+
+      // If only one has scheduled_start, prioritize it
+      if (a.scheduled_start && !b.scheduled_start) return -1
+      if (!a.scheduled_start && b.scheduled_start) return 1
+
+      // If neither has scheduled_start, sort by area priority
+      return areaPriority[a.area] - areaPriority[b.area]
+    })
+
+    console.log("Final sorted order:", filtered.map(t => t.task_name + " (" + t.area + ")").join(", "))
     console.log('Filtered tasks:', filtered.length)
     return filtered
   }, [tasks, selectedArea, filter])
@@ -510,26 +573,127 @@ const TodoList = () => {
 
                 {/* Content */}
                 <div className="flex-1 min-w-0">
-                  <p className={`text-lg ${task.status === 'Done' ? 'line-through text-gray-400' : 'text-gray-900'}`}>
-                    {task.task_name}
-                  </p>
+                  {/* Editable Task Name */}
+                  {editingField?.taskId === task.id && editingField?.field === 'task_name' ? (
+                    <input
+                      type="text"
+                      defaultValue={task.task_name}
+                      autoFocus
+                      onBlur={(e) => updateTaskField(task.id, 'task_name', e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') {
+                          updateTaskField(task.id, 'task_name', e.currentTarget.value)
+                        } else if (e.key === 'Escape') {
+                          setEditingField(null)
+                        }
+                      }}
+                      onClick={(e) => e.stopPropagation()}
+                      className="text-lg w-full border border-blue-500 rounded px-2 py-1 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    />
+                  ) : (
+                    <p
+                      className={`text-lg cursor-pointer hover:bg-gray-50 rounded px-2 py-1 -mx-2 ${task.status === 'Done' ? 'line-through text-gray-400' : 'text-gray-900'}`}
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        setEditingField({taskId: task.id, field: 'task_name'})
+                      }}
+                    >
+                      {task.task_name}
+                    </p>
+                  )}
+
                   {task.description && (
                     <p className="text-sm text-gray-600 mt-1">{task.description}</p>
                   )}
+
                   <div className="flex items-center gap-3 mt-2 flex-wrap">
-                    <span className={`px-2 py-1 rounded text-xs font-medium ${getAreaColor(task.area)}`}>
-                      {task.area}
-                    </span>
-                    {task.task_type && (
-                      <span className="px-2 py-1 rounded text-xs font-medium bg-gray-100 text-gray-700">
-                        {task.task_type}
+                    {/* Editable Area */}
+                    {editingField?.taskId === task.id && editingField?.field === 'area' ? (
+                      <select
+                        defaultValue={task.area}
+                        autoFocus
+                        onBlur={(e) => updateTaskField(task.id, 'area', e.target.value as Area)}
+                        onChange={(e) => updateTaskField(task.id, 'area', e.target.value as Area)}
+                        onClick={(e) => e.stopPropagation()}
+                        className="px-2 py-1 rounded text-xs font-medium border border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                      >
+                        <option value="Full Stack">Full Stack</option>
+                        <option value="S4">S4</option>
+                        <option value="808">808</option>
+                        <option value="Personal">Personal</option>
+                        <option value="Huge Capital">Huge Capital</option>
+                        <option value="Golf">Golf</option>
+                        <option value="Health">Health</option>
+                      </select>
+                    ) : (
+                      <span
+                        className={`px-2 py-1 rounded text-xs font-medium cursor-pointer hover:ring-2 hover:ring-blue-300 ${getAreaColor(task.area)}`}
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          setEditingField({taskId: task.id, field: 'area'})
+                        }}
+                      >
+                        {task.area}
                       </span>
                     )}
-                    {task.effort_level && (
-                      <span className="px-2 py-1 rounded text-xs font-medium bg-green-100 text-green-700">
+
+                    {/* Editable Task Type */}
+                    {editingField?.taskId === task.id && editingField?.field === 'task_type' ? (
+                      <input
+                        type="text"
+                        defaultValue={task.task_type || ''}
+                        autoFocus
+                        onBlur={(e) => updateTaskField(task.id, 'task_type', e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') {
+                            updateTaskField(task.id, 'task_type', e.currentTarget.value)
+                          } else if (e.key === 'Escape') {
+                            setEditingField(null)
+                          }
+                        }}
+                        onClick={(e) => e.stopPropagation()}
+                        className="px-2 py-1 rounded text-xs font-medium border border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white"
+                      />
+                    ) : (
+                      <span
+                        className="px-2 py-1 rounded text-xs font-medium bg-gray-100 text-gray-700 cursor-pointer hover:ring-2 hover:ring-blue-300"
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          setEditingField({taskId: task.id, field: 'task_type'})
+                        }}
+                      >
+                        {task.task_type || 'Add Type'}
+                      </span>
+                    )}
+
+                    {/* Editable Effort Level */}
+                    {editingField?.taskId === task.id && editingField?.field === 'effort_level' ? (
+                      <select
+                        defaultValue={task.effort_level}
+                        autoFocus
+                        onBlur={(e) => updateTaskField(task.id, 'effort_level', e.target.value as EffortLevel)}
+                        onChange={(e) => updateTaskField(task.id, 'effort_level', e.target.value as EffortLevel)}
+                        onClick={(e) => e.stopPropagation()}
+                        className="px-2 py-1 rounded text-xs font-medium border border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                      >
+                        <option value="$$$ Printer $$$">$$$ Printer $$$</option>
+                        <option value="$ Makes Money $">$ Makes Money $</option>
+                        <option value="-$ Save Dat $-">-$ Save Dat $-</option>
+                        <option value=":( No Money ):">{":( No Money ):"}</option>
+                        <option value="8) Vibing (8">8) Vibing (8</option>
+                      </select>
+                    ) : task.effort_level ? (
+                      <span
+                        className="px-2 py-1 rounded text-xs font-medium bg-green-100 text-green-700 cursor-pointer hover:ring-2 hover:ring-blue-300"
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          setEditingField({taskId: task.id, field: 'effort_level'})
+                        }}
+                      >
                         {task.effort_level}
                       </span>
-                    )}
+                    ) : null}
+
                     {task.due_date && (
                       <span className={`text-xs flex items-center gap-1 ${
                         isToday(task.due_date) ? 'text-yellow-600 font-medium' :
@@ -540,19 +704,66 @@ const TodoList = () => {
                         {format(task.due_date, 'MMM d, yyyy')}
                       </span>
                     )}
-                    {task.hours_projected && (
-                      <span className="text-xs text-gray-500">
-                        {task.hours_projected}h projected
+
+                    {/* Editable Hours Projected */}
+                    {editingField?.taskId === task.id && editingField?.field === 'hours_projected' ? (
+                      <input
+                        type="number"
+                        defaultValue={task.hours_projected || ''}
+                        autoFocus
+                        onBlur={(e) => updateTaskField(task.id, 'hours_projected', e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') {
+                            updateTaskField(task.id, 'hours_projected', e.currentTarget.value)
+                          } else if (e.key === 'Escape') {
+                            setEditingField(null)
+                          }
+                        }}
+                        onClick={(e) => e.stopPropagation()}
+                        className="w-20 px-2 py-1 text-xs border border-blue-500 rounded focus:outline-none focus:ring-2 focus:ring-blue-500"
+                      />
+                    ) : (
+                      <span
+                        className="text-xs text-gray-500 cursor-pointer hover:bg-gray-100 px-2 py-1 rounded"
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          setEditingField({taskId: task.id, field: 'hours_projected'})
+                        }}
+                      >
+                        {task.hours_projected ? `${task.hours_projected}h projected` : '+ Projected'}
+                      </span>
+                    )}
+
+                    {/* Editable Hours Worked */}
+                    {editingField?.taskId === task.id && editingField?.field === 'hours_worked' ? (
+                      <input
+                        type="number"
+                        defaultValue={task.hours_worked || ''}
+                        autoFocus
+                        onBlur={(e) => updateTaskField(task.id, 'hours_worked', e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') {
+                            updateTaskField(task.id, 'hours_worked', e.currentTarget.value)
+                          } else if (e.key === 'Escape') {
+                            setEditingField(null)
+                          }
+                        }}
+                        onClick={(e) => e.stopPropagation()}
+                        className="w-20 px-2 py-1 text-xs border border-blue-500 rounded focus:outline-none focus:ring-2 focus:ring-blue-500"
+                      />
+                    ) : (
+                      <span
+                        className="text-xs text-gray-500 cursor-pointer hover:bg-gray-100 px-2 py-1 rounded"
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          setEditingField({taskId: task.id, field: 'hours_worked'})
+                        }}
+                      >
+                        {task.hours_worked ? `${task.hours_worked}h worked` : '+ Worked'}
                       </span>
                     )}
                   </div>
 
-                  {/* Created Date */}
-                  {task.created_at && (
-                    <div className="text-xs text-gray-500 mt-2 font-medium">
-                      Created: {format(task.created_at, 'MMM d, yyyy')}
-                    </div>
-                  )}
 
                   {/* Checklist */}
                   {task.checklist && task.checklist.length > 0 && (

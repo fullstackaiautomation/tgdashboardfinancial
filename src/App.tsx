@@ -1,9 +1,9 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { supabase } from './lib/supabase'
 import ContentLibrary from './components/ContentLibrary'
 
 type Area = 'Full Stack' | 'S4' | '808' | 'Personal' | 'Huge Capital' | 'Golf' | 'Health'
-type EffortLevel = '$$$ MoneyMaker' | '$ Lil Money' | '$$ Some Money' | '$$$ Big Money' | '$$$$ Huge Money' | '-$ Save Dat Money' | ':( Pointless' | '8) JusVibin'
+type EffortLevel = '$$$ Printer $$$' | '$ Makes Money $' | '-$ Save Dat $-' | ':( No Money ):' | '8) Vibing (8'
 type Priority = 'Low' | 'Medium' | 'High'
 type RecurringType = 'none' | 'daily' | 'daily_weekdays' | 'weekly' | 'monthly' | 'custom'
 
@@ -43,6 +43,7 @@ function App() {
   const [deepWorkSessions, setDeepWorkSessions] = useState<any[]>([])
   const [selectedArea, setSelectedArea] = useState<Area | 'All Areas'>('All Areas')
   const [scheduledTasks, setScheduledTasks] = useState<{[hour: number]: {task: Task, duration: number}[]}>({})  // Track tasks with duration (in 30-min slots)
+  const [selectedScheduleDate, setSelectedScheduleDate] = useState<string>(new Date().toISOString().split('T')[0]) // YYYY-MM-DD format
   const [activeMainTab, setActiveMainTab] = useState<'daily' | 'content'>('daily')
   const [activeSubTab, setActiveSubTab] = useState<'todo' | 'schedule' | 'deepwork'>('todo')
   const [selectedTimePeriod, setSelectedTimePeriod] = useState<'All Time' | 'Today' | 'This Week' | 'This Month'>('All Time')
@@ -72,6 +73,22 @@ function App() {
   const [sessionStartTime, setSessionStartTime] = useState<Date | null>(null)
   const [pausedDuration, setPausedDuration] = useState<number>(0)
   const [pauseStartTime, setPauseStartTime] = useState<Date | null>(null)
+  const [editTaskSearchTerm, setEditTaskSearchTerm] = useState<string>('')
+  const [showEditTaskDropdown, setShowEditTaskDropdown] = useState<boolean>(false)
+  const [editingTaskField, setEditingTaskField] = useState<{taskId: string, field: string} | null>(null)
+
+  // Ref to track latest scheduledTasks without causing re-renders
+  const scheduledTasksRef = useRef(scheduledTasks)
+  const selectedScheduleDateRef = useRef(selectedScheduleDate)
+
+  // Update refs whenever values change
+  useEffect(() => {
+    scheduledTasksRef.current = scheduledTasks
+  }, [scheduledTasks])
+
+  useEffect(() => {
+    selectedScheduleDateRef.current = selectedScheduleDate
+  }, [selectedScheduleDate])
 
   // Load persisted timer state and schedule on mount
   useEffect(() => {
@@ -94,18 +111,46 @@ function App() {
       }
     }
 
-    // Load daily schedule
-    const storedSchedule = localStorage.getItem('dailySchedule')
+    // Load today's schedule
+    const today = new Date().toISOString().split('T')[0]
+    const storedSchedule = localStorage.getItem(`schedule_${today}`)
     if (storedSchedule) {
       const scheduleData = JSON.parse(storedSchedule)
-      const today = new Date().toISOString().split('T')[0]
-
-      // Only load if it's from today
-      if (scheduleData.date === today && scheduleData.tasks) {
+      if (scheduleData.tasks) {
         setScheduledTasks(scheduleData.tasks)
       }
     }
   }, [])
+
+  // Save and load schedule when date changes
+  useEffect(() => {
+    // Save current schedule before switching (using previous date from ref)
+    return () => {
+      const currentDate = selectedScheduleDateRef.current
+      const currentTasks = scheduledTasksRef.current
+      if (Object.keys(currentTasks).length > 0) {
+        localStorage.setItem(`schedule_${currentDate}`, JSON.stringify({
+          date: currentDate,
+          tasks: currentTasks
+        }))
+      }
+    }
+  }, [selectedScheduleDate])
+
+  // Load schedule when date changes
+  useEffect(() => {
+    const storedSchedule = localStorage.getItem(`schedule_${selectedScheduleDate}`)
+    if (storedSchedule) {
+      const scheduleData = JSON.parse(storedSchedule)
+      if (scheduleData.tasks) {
+        setScheduledTasks(scheduleData.tasks)
+      } else {
+        setScheduledTasks({})
+      }
+    } else {
+      setScheduledTasks({})
+    }
+  }, [selectedScheduleDate])
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session } }) => {
@@ -269,6 +314,33 @@ function App() {
     }
   }
 
+  const updateTaskFieldInline = async (taskId: string, field: string, value: any) => {
+    try {
+      const updateData: any = {}
+
+      // Map field names to database column names
+      if (field === 'hours_projected') {
+        updateData['Hours Projected'] = value ? Number(value) : null
+      } else if (field === 'hours_worked') {
+        updateData['Hours Worked'] = value ? Number(value) : null
+      } else {
+        updateData[field] = value
+      }
+
+      const { error } = await supabase
+        .from('TG To Do List')
+        .update(updateData)
+        .eq('id', taskId)
+
+      if (error) throw error
+
+      if (session) fetchTasks(session.user.id)
+      setEditingTaskField(null)
+    } catch (error) {
+      console.error('Error updating task field:', error)
+    }
+  }
+
   const deleteTask = async (taskId: string) => {
     if (!window.confirm('Are you sure you want to delete this task?')) return
 
@@ -425,7 +497,15 @@ function App() {
   }
 
   const saveScheduleLog = async () => {
-    if (!session || Object.keys(scheduledTasks).length === 0) return
+    if (!session) {
+      alert('You must be logged in to save schedules.')
+      return
+    }
+
+    if (Object.keys(scheduledTasks).length === 0) {
+      alert('No tasks scheduled. Add tasks to the schedule first.')
+      return
+    }
 
     try {
       // Format scheduled tasks for storage
@@ -452,7 +532,7 @@ function App() {
         .from('schedule_log')
         .insert({
           user_id: session.user.id,
-          date: new Date().toISOString().split('T')[0],
+          date: selectedScheduleDate,
           schedule_data: scheduleData,
           created_at: new Date().toISOString()
         })
@@ -462,11 +542,12 @@ function App() {
 
       console.log('✅ Schedule saved to log:', data)
       // Optional: Show success message to user
-      alert('Schedule saved successfully!')
+      alert(`Schedule for ${selectedScheduleDate} saved successfully!`)
 
-    } catch (error) {
+    } catch (error: any) {
       console.error('Error saving schedule:', error)
-      alert('Failed to save schedule. Please try again.')
+      const errorMessage = error?.message || error?.toString() || 'Unknown error'
+      alert(`Failed to save schedule: ${errorMessage}`)
     }
   }
 
@@ -486,21 +567,28 @@ function App() {
     // Check every minute
     const interval = setInterval(checkEndOfDay, 60000)
 
-    // Also save to localStorage periodically for recovery
+    return () => {
+      clearInterval(interval)
+    }
+  }, [session])
+
+  // Separate effect for localStorage auto-save (runs once, uses ref for latest value)
+  useEffect(() => {
     const saveInterval = setInterval(() => {
-      if (Object.keys(scheduledTasks).length > 0) {
-        localStorage.setItem('dailySchedule', JSON.stringify({
-          date: new Date().toISOString().split('T')[0],
-          tasks: scheduledTasks
+      const currentScheduledTasks = scheduledTasksRef.current
+      const currentDate = selectedScheduleDateRef.current
+      if (Object.keys(currentScheduledTasks).length > 0) {
+        localStorage.setItem(`schedule_${currentDate}`, JSON.stringify({
+          date: currentDate,
+          tasks: currentScheduledTasks
         }))
       }
     }, 30000) // Every 30 seconds
 
     return () => {
-      clearInterval(interval)
       clearInterval(saveInterval)
     }
-  }, [scheduledTasks, session])
+  }, [])
 
   const formatTime = (seconds: number) => {
     const mins = Math.floor(seconds / 60)
@@ -521,35 +609,89 @@ function App() {
       start_time: sessionData.start_time,
       end_time: sessionData.end_time
     })
+    setEditTaskSearchTerm(sessionData.task?.task_name || '')
+  }
+
+  const roundToQuarterHour = (date: Date): Date => {
+    const roundedDate = new Date(date)
+    const minutes = roundedDate.getMinutes()
+    const remainder = minutes % 15
+    const roundedMinutes = remainder < 8 ? minutes - remainder : minutes + (15 - remainder)
+    roundedDate.setMinutes(roundedMinutes, 0, 0)
+    return roundedDate
+  }
+
+  const startAddingNewSession = () => {
+    const now = roundToQuarterHour(new Date())
+    const oneHourAgo = new Date(now.getTime() - 60 * 60 * 1000)
+
+    setEditingSessionId('new')
+    setEditFormData({
+      area: 'Full Stack',
+      task_type: '',
+      task_name: '',
+      task_id: null,
+      effort_level: '',
+      duration_minutes: 60,
+      start_time: oneHourAgo.toISOString(),
+      end_time: now.toISOString(),
+      notes: ''
+    })
+    setEditTaskSearchTerm('')
   }
 
   const cancelEditingSession = () => {
     setEditingSessionId(null)
     setEditFormData({})
+    setEditTaskSearchTerm('')
+    setShowEditTaskDropdown(false)
   }
 
   const saveEditedSession = async (sessionId: string) => {
     try {
-      const { error } = await supabase
-        .from('deep_work_log')
-        .update({
-          area: editFormData.area,
-          task_type: editFormData.task_type,
-          task_id: editFormData.task_id,
-          effort_level: editFormData.effort_level,
-          notes: editFormData.notes,
-          duration_minutes: editFormData.duration_minutes,
-          start_time: editFormData.start_time,
-          end_time: editFormData.end_time
-        })
-        .eq('id', sessionId)
+      // Calculate duration from start and end times
+      const startTime = new Date(editFormData.start_time)
+      const endTime = new Date(editFormData.end_time)
+      const durationMinutes = Math.floor((endTime.getTime() - startTime.getTime()) / (1000 * 60))
 
-      if (error) throw error
+      const sessionData = {
+        area: editFormData.area,
+        task_type: editFormData.task_type,
+        task_id: editFormData.task_id,
+        effort_level: editFormData.effort_level,
+        notes: editFormData.notes,
+        duration_minutes: durationMinutes,
+        start_time: editFormData.start_time,
+        end_time: editFormData.end_time
+      }
+
+      if (sessionId === 'new') {
+        // Create new session
+        const { error } = await supabase
+          .from('deep_work_log')
+          .insert({
+            ...sessionData,
+            user_id: session?.user.id
+          })
+
+        if (error) throw error
+      } else {
+        // Update existing session
+        const { error } = await supabase
+          .from('deep_work_log')
+          .update(sessionData)
+          .eq('id', sessionId)
+
+        if (error) throw error
+      }
+
       if (session) fetchDeepWorkSessions(session.user.id)
       setEditingSessionId(null)
       setEditFormData({})
+      setEditTaskSearchTerm('')
+      setShowEditTaskDropdown(false)
     } catch (error) {
-      console.error('Error updating session:', error)
+      console.error('Error saving session:', error)
     }
   }
 
@@ -566,6 +708,8 @@ function App() {
       if (session) fetchDeepWorkSessions(session.user.id)
       setEditingSessionId(null)
       setEditFormData({})
+      setEditTaskSearchTerm('')
+      setShowEditTaskDropdown(false)
     } catch (error) {
       console.error('Error deleting session:', error)
     }
@@ -582,6 +726,17 @@ function App() {
       'Health': '#14b8a6'
     }
     return colors[area] || '#6b7280'
+  }
+
+  const getEffortLevelColor = (effortLevel: EffortLevel | undefined | string) => {
+    const colors: Record<string, string> = {
+      '$$$ Printer $$$': '#22c55e',  // Bright Green
+      '$ Makes Money $': '#15803d',   // Dark Green
+      '-$ Save Dat $-': '#fb923c',    // Orange
+      ':( No Money ):': '#ef4444',    // Red
+      '8) Vibing (8': '#a855f7'       // Purple
+    }
+    return colors[effortLevel || ''] || '#6b7280'
   }
 
   const getTaskTypesByArea = (area: Area | '') => {
@@ -739,11 +894,11 @@ function App() {
 
   const effortLevelCounts = {
     'All Levels': filteredDWSessions.length,
-    '$$$ MoneyMaker': filteredDWSessions.filter(s => s.effort_level === '$$$ MoneyMaker').length,
-    '$ Lil Money': filteredDWSessions.filter(s => s.effort_level === '$ Lil Money').length,
-    '-$ Save Dat Money': filteredDWSessions.filter(s => s.effort_level === '-$ Save Dat Money').length,
-    ':( Pointless': filteredDWSessions.filter(s => s.effort_level === ':( Pointless').length,
-    '8) JusVibin': filteredDWSessions.filter(s => s.effort_level === '8) JusVibin').length
+    '$$$ Printer $$$': filteredDWSessions.filter(s => s.effort_level === '$$$ Printer $$$').length,
+    '$ Makes Money $': filteredDWSessions.filter(s => s.effort_level === '$ Makes Money $').length,
+    '-$ Save Dat $-': filteredDWSessions.filter(s => s.effort_level === '-$ Save Dat $-').length,
+    ':( No Money ):': filteredDWSessions.filter(s => s.effort_level === ':( No Money ):').length,
+    '8) Vibing (8': filteredDWSessions.filter(s => s.effort_level === '8) Vibing (8').length
   }
 
   // Top 5 tasks by duration
@@ -1104,11 +1259,27 @@ function App() {
         </div>
 
         {/* Content */}
-        <div style={{ flex: 1, overflowY: 'auto', padding: '24px' }}>
+        <div style={{ flex: 1, overflow: 'hidden', position: 'relative', height: 'calc(100vh - 120px)' }}>
           {activeSubTab === 'todo' && (
-          <div style={{ display: 'flex', gap: '24px' }}>
+          <div style={{
+            position: 'absolute',
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            display: 'flex',
+            gap: '24px',
+            padding: '24px'
+          }}>
             {/* Left Column - Stats & Tasks */}
-            <div style={{ flex: 1 }}>
+            <div
+              className="custom-scrollbar"
+              style={{
+              flex: 1,
+              overflowY: 'auto',
+              overflowX: 'hidden',
+              paddingRight: '10px'
+            }}>
               {/* Stats Grid - Row 1 */}
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '16px', marginBottom: '16px' }}>
                 <button
@@ -1233,10 +1404,10 @@ function App() {
                     setTaskFormData({ due_date: new Date().toISOString().split('T')[0] })
                   }}
                   style={{
-                    backgroundColor: '#9333ea',
+                    backgroundColor: '#f97316',
                     padding: '20px',
                     borderRadius: '12px',
-                    border: '2px solid #a855f7',
+                    border: 'none',
                     color: 'white',
                     cursor: 'pointer',
                     fontWeight: 'bold',
@@ -1248,7 +1419,7 @@ function App() {
                     gap: '8px'
                   }}
                 >
-                  ➕ Add Task
+                  Add Task
                 </button>
               </div>
 
@@ -1403,61 +1574,279 @@ function App() {
                     <div style={{ flex: 1, display: 'flex', gap: '15px' }}>
                       {/* Column 1: Main Task Content */}
                       <div style={{ minWidth: '320px' }}>
-                      <h3 style={{
-                        fontSize: '18px',
-                        fontWeight: 'bold',
-                        marginBottom: '12px',
-                        color: 'white',
-                        textDecoration: task.status === 'Done' ? 'line-through' : 'none'
-                      }}>
-                        {task.task_name}
-                      </h3>
+                      {/* Editable Task Name */}
+                      {editingTaskField?.taskId === task.id && editingTaskField?.field === 'task_name' ? (
+                        <input
+                          type="text"
+                          defaultValue={task.task_name}
+                          autoFocus
+                          onBlur={(e) => updateTaskFieldInline(task.id, 'task_name', e.target.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter') {
+                              updateTaskFieldInline(task.id, 'task_name', e.currentTarget.value)
+                            } else if (e.key === 'Escape') {
+                              setEditingTaskField(null)
+                            }
+                          }}
+                          style={{
+                            fontSize: '18px',
+                            fontWeight: 'bold',
+                            marginBottom: '12px',
+                            color: 'white',
+                            backgroundColor: '#2d3748',
+                            border: '2px solid #3b82f6',
+                            borderRadius: '4px',
+                            padding: '4px 8px',
+                            width: '100%',
+                            outline: 'none'
+                          }}
+                        />
+                      ) : (
+                        <h3
+                          onClick={() => setEditingTaskField({taskId: task.id, field: 'task_name'})}
+                          style={{
+                            fontSize: '18px',
+                            fontWeight: 'bold',
+                            marginBottom: '12px',
+                            color: 'white',
+                            textDecoration: task.status === 'Done' ? 'line-through' : 'none',
+                            cursor: 'pointer',
+                            padding: '4px 8px',
+                            borderRadius: '4px',
+                            transition: 'background-color 0.2s'
+                          }}
+                          onMouseEnter={(e) => e.currentTarget.style.backgroundColor = '#2d3748'}
+                          onMouseLeave={(e) => e.currentTarget.style.backgroundColor = 'transparent'}
+                        >
+                          {task.task_name}
+                        </h3>
+                      )}
 
                       {/* Badges */}
                       <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', marginBottom: '12px' }}>
-                        <span style={{
-                          backgroundColor: getAreaColor(task.area as Area),
-                          color: 'white',
-                          padding: '4px 12px',
-                          borderRadius: '12px',
-                          fontSize: '12px',
-                          fontWeight: '500'
-                        }}>
-                          {task.area}
-                        </span>
-                        {task.task_type && (
-                          <span style={{
-                            backgroundColor: '#f59e0b',
-                            color: 'white',
-                            padding: '4px 12px',
-                            borderRadius: '12px',
-                            fontSize: '12px',
-                            fontWeight: '500'
-                          }}>
-                            {task.task_type}
+                        {/* Editable Area */}
+                        {editingTaskField?.taskId === task.id && editingTaskField?.field === 'area' ? (
+                          <select
+                            defaultValue={task.area}
+                            autoFocus
+                            onBlur={(e) => updateTaskFieldInline(task.id, 'area', e.target.value)}
+                            onChange={(e) => updateTaskFieldInline(task.id, 'area', e.target.value)}
+                            onClick={(e) => e.currentTarget.focus()}
+                            style={{
+                              backgroundColor: getAreaColor(task.area as Area),
+                              color: 'white',
+                              padding: '4px 12px',
+                              borderRadius: '12px',
+                              fontSize: '12px',
+                              fontWeight: '500',
+                              border: '2px solid #3b82f6',
+                              cursor: 'pointer',
+                              outline: 'none'
+                            }}
+                          >
+                            <option value="Full Stack" style={{backgroundColor: getAreaColor('Full Stack'), color: 'white', padding: '4px'}}>Full Stack</option>
+                            <option value="S4" style={{backgroundColor: getAreaColor('S4'), color: 'white', padding: '4px'}}>S4</option>
+                            <option value="808" style={{backgroundColor: getAreaColor('808'), color: 'white', padding: '4px'}}>808</option>
+                            <option value="Personal" style={{backgroundColor: getAreaColor('Personal'), color: 'white', padding: '4px'}}>Personal</option>
+                            <option value="Huge Capital" style={{backgroundColor: getAreaColor('Huge Capital'), color: 'white', padding: '4px'}}>Huge Capital</option>
+                            <option value="Golf" style={{backgroundColor: getAreaColor('Golf'), color: 'white', padding: '4px'}}>Golf</option>
+                            <option value="Health" style={{backgroundColor: getAreaColor('Health'), color: 'white', padding: '4px'}}>Health</option>
+                          </select>
+                        ) : (
+                          <span
+                            onClick={() => setEditingTaskField({taskId: task.id, field: 'area'})}
+                            style={{
+                              backgroundColor: getAreaColor(task.area as Area),
+                              color: 'white',
+                              padding: '4px 12px',
+                              borderRadius: '12px',
+                              fontSize: '12px',
+                              fontWeight: '500',
+                              cursor: 'pointer',
+                              transition: 'opacity 0.2s'
+                            }}
+                            onMouseEnter={(e) => e.currentTarget.style.opacity = '0.8'}
+                            onMouseLeave={(e) => e.currentTarget.style.opacity = '1'}
+                          >
+                            {task.area}
                           </span>
                         )}
-                        <span style={{
-                          backgroundColor: '#16a34a',
-                          color: 'white',
-                          padding: '4px 12px',
-                          borderRadius: '12px',
-                          fontSize: '12px',
-                          fontWeight: '500'
-                        }}>
-                          {task.effort_level || '$ Lil Money'}
-                        </span>
+
+                        {/* Editable Task Type */}
+                        {editingTaskField?.taskId === task.id && editingTaskField?.field === 'task_type' ? (
+                          <select
+                            defaultValue={task.task_type || ''}
+                            autoFocus
+                            onBlur={(e) => updateTaskFieldInline(task.id, 'task_type', e.target.value)}
+                            onChange={(e) => updateTaskFieldInline(task.id, 'task_type', e.target.value)}
+                            onClick={(e) => e.currentTarget.focus()}
+                            style={{
+                              backgroundColor: '#f59e0b',
+                              color: 'white',
+                              padding: '4px 12px',
+                              borderRadius: '12px',
+                              fontSize: '12px',
+                              fontWeight: '500',
+                              border: '2px solid #3b82f6',
+                              cursor: 'pointer',
+                              outline: 'none'
+                            }}
+                          >
+                            <option value="" style={{backgroundColor: '#1a1f2e', color: 'white', padding: '4px'}}>Select type...</option>
+                            {getTaskTypesByArea(task.area as Area).map(type => (
+                              <option key={type} value={type} style={{backgroundColor: '#f59e0b', color: 'white', padding: '4px'}}>{type}</option>
+                            ))}
+                          </select>
+                        ) : (
+                          <span
+                            onClick={() => setEditingTaskField({taskId: task.id, field: 'task_type'})}
+                            style={{
+                              backgroundColor: '#f59e0b',
+                              color: 'white',
+                              padding: '4px 12px',
+                              borderRadius: '12px',
+                              fontSize: '12px',
+                              fontWeight: '500',
+                              cursor: 'pointer',
+                              transition: 'opacity 0.2s'
+                            }}
+                            onMouseEnter={(e) => e.currentTarget.style.opacity = '0.8'}
+                            onMouseLeave={(e) => e.currentTarget.style.opacity = '1'}
+                          >
+                            {task.task_type || 'Add Type'}
+                          </span>
+                        )}
+
+                        {/* Editable Effort Level */}
+                        {editingTaskField?.taskId === task.id && editingTaskField?.field === 'effort_level' ? (
+                          <select
+                            defaultValue={task.effort_level}
+                            autoFocus
+                            onBlur={(e) => updateTaskFieldInline(task.id, 'effort_level', e.target.value)}
+                            onChange={(e) => updateTaskFieldInline(task.id, 'effort_level', e.target.value)}
+                            onClick={(e) => e.currentTarget.focus()}
+                            style={{
+                              backgroundColor: getEffortLevelColor(task.effort_level) + '20',
+                              color: getEffortLevelColor(task.effort_level),
+                              padding: '4px 12px',
+                              borderRadius: '12px',
+                              fontSize: '12px',
+                              fontWeight: '500',
+                              border: `2px solid #3b82f6`,
+                              cursor: 'pointer',
+                              outline: 'none'
+                            }}
+                          >
+                            <option value="$$$ Printer $$$" style={{backgroundColor: getEffortLevelColor('$$$ Printer $$$'), color: 'white', padding: '4px'}}>$$$ Printer $$$</option>
+                            <option value="$ Makes Money $" style={{backgroundColor: getEffortLevelColor('$ Makes Money $'), color: 'white', padding: '4px'}}>$ Makes Money $</option>
+                            <option value="-$ Save Dat $-" style={{backgroundColor: getEffortLevelColor('-$ Save Dat $-'), color: 'white', padding: '4px'}}>-$ Save Dat $-</option>
+                            <option value=":( No Money ):" style={{backgroundColor: getEffortLevelColor(':( No Money ):'), color: 'white', padding: '4px'}}>:( No Money ):</option>
+                            <option value="8) Vibing (8" style={{backgroundColor: getEffortLevelColor('8) Vibing (8'), color: 'white', padding: '4px'}}>8) Vibing (8</option>
+                          </select>
+                        ) : (
+                          <span
+                            onClick={() => setEditingTaskField({taskId: task.id, field: 'effort_level'})}
+                            style={{
+                              backgroundColor: getEffortLevelColor(task.effort_level),
+                              color: 'white',
+                              padding: '4px 12px',
+                              borderRadius: '12px',
+                              fontSize: '12px',
+                              fontWeight: '500',
+                              border: `1px solid ${getEffortLevelColor(task.effort_level)}`,
+                              cursor: 'pointer',
+                              transition: 'opacity 0.2s'
+                            }}
+                            onMouseEnter={(e) => e.currentTarget.style.opacity = '0.8'}
+                            onMouseLeave={(e) => e.currentTarget.style.opacity = '1'}
+                          >
+                            {task.effort_level || '$ Makes Money $'}
+                          </span>
+                        )}
                       </div>
 
-                      {/* Hours Info */}
+                      {/* Editable Hours Info */}
                       <div style={{
                         display: 'flex',
                         gap: '20px',
                         fontSize: '13px',
                         color: '#9ca3af'
                       }}>
-                        <div>Hours Projected: {task.hours_projected || 1}</div>
-                        <div>Hours Worked: {task.hours_worked || 0}</div>
+                        {editingTaskField?.taskId === task.id && editingTaskField?.field === 'hours_projected' ? (
+                          <div>
+                            Hours Projected:{' '}
+                            <input
+                              type="number"
+                              defaultValue={task.hours_projected || 1}
+                              autoFocus
+                              onBlur={(e) => updateTaskFieldInline(task.id, 'hours_projected', e.target.value)}
+                              onKeyDown={(e) => {
+                                if (e.key === 'Enter') {
+                                  updateTaskFieldInline(task.id, 'hours_projected', e.currentTarget.value)
+                                } else if (e.key === 'Escape') {
+                                  setEditingTaskField(null)
+                                }
+                              }}
+                              style={{
+                                width: '60px',
+                                backgroundColor: '#2d3748',
+                                border: '2px solid #3b82f6',
+                                borderRadius: '4px',
+                                padding: '2px 6px',
+                                color: 'white',
+                                fontSize: '13px',
+                                outline: 'none'
+                              }}
+                            />
+                          </div>
+                        ) : (
+                          <div
+                            onClick={() => setEditingTaskField({taskId: task.id, field: 'hours_projected'})}
+                            style={{ cursor: 'pointer', padding: '2px 6px', borderRadius: '4px', transition: 'background-color 0.2s' }}
+                            onMouseEnter={(e) => e.currentTarget.style.backgroundColor = '#2d3748'}
+                            onMouseLeave={(e) => e.currentTarget.style.backgroundColor = 'transparent'}
+                          >
+                            Hours Projected: {task.hours_projected || 1}
+                          </div>
+                        )}
+
+                        {editingTaskField?.taskId === task.id && editingTaskField?.field === 'hours_worked' ? (
+                          <div>
+                            Hours Worked:{' '}
+                            <input
+                              type="number"
+                              defaultValue={task.hours_worked || 0}
+                              autoFocus
+                              onBlur={(e) => updateTaskFieldInline(task.id, 'hours_worked', e.target.value)}
+                              onKeyDown={(e) => {
+                                if (e.key === 'Enter') {
+                                  updateTaskFieldInline(task.id, 'hours_worked', e.currentTarget.value)
+                                } else if (e.key === 'Escape') {
+                                  setEditingTaskField(null)
+                                }
+                              }}
+                              style={{
+                                width: '60px',
+                                backgroundColor: '#2d3748',
+                                border: '2px solid #3b82f6',
+                                borderRadius: '4px',
+                                padding: '2px 6px',
+                                color: 'white',
+                                fontSize: '13px',
+                                outline: 'none'
+                              }}
+                            />
+                          </div>
+                        ) : (
+                          <div
+                            onClick={() => setEditingTaskField({taskId: task.id, field: 'hours_worked'})}
+                            style={{ cursor: 'pointer', padding: '2px 6px', borderRadius: '4px', transition: 'background-color 0.2s' }}
+                            onMouseEnter={(e) => e.currentTarget.style.backgroundColor = '#2d3748'}
+                            onMouseLeave={(e) => e.currentTarget.style.backgroundColor = 'transparent'}
+                          >
+                            Hours Worked: {task.hours_worked || 0}
+                          </div>
+                        )}
                       </div>
 
                       {/* Created Date and Time */}
@@ -1475,22 +1864,40 @@ function App() {
                       </div>
 
 
-                      {/* Status */}
-                      <div style={{
-                        marginTop: '8px',
-                        display: 'flex',
-                        alignItems: 'center',
-                        gap: '6px'
-                      }}>
-                        <span style={{
-                          width: '8px',
-                          height: '8px',
-                          borderRadius: '50%',
-                          backgroundColor: task.status === 'Done' ? '#10b981' : '#dc2626',
-                          display: 'inline-block'
-                        }}></span>
-                        <span style={{ fontSize: '13px', color: '#9ca3af' }}>{task.status || 'Not started'}</span>
-                      </div>
+                      {/* Scheduled Time */}
+                      {(() => {
+                        let scheduledInfo = null
+                        for (const [slotIndex, items] of Object.entries(scheduledTasks)) {
+                          const foundItem = items.find((item: any) => item.task.id === task.id)
+                          if (foundItem) {
+                            const slot = parseInt(slotIndex)
+                            const startMinutes = slot * 30
+                            const endMinutes = startMinutes + (foundItem.duration * 30)
+                            const startHours = Math.floor(startMinutes / 60)
+                            const startMins = startMinutes % 60
+                            const endHours = Math.floor(endMinutes / 60)
+                            const endMins = endMinutes % 60
+                            const formatTime = (hours: number, mins: number) => {
+                              const displayHour = hours === 0 ? 12 : hours > 12 ? hours - 12 : hours
+                              const ampm = hours < 12 ? 'AM' : 'PM'
+                              return `${displayHour}:${mins.toString().padStart(2, '0')} ${ampm}`
+                            }
+                            const scheduleDate = new Date(selectedScheduleDate)
+                            const dayName = scheduleDate.toLocaleDateString('en-US', { weekday: 'long' })
+                            const dateStr = scheduleDate.toLocaleDateString('en-US', { month: 'numeric', day: 'numeric', year: '2-digit' })
+                            scheduledInfo = `${dayName} ${dateStr} ${formatTime(startHours, startMins)}-${formatTime(endHours, endMins)}`
+                            break
+                          }
+                        }
+                        if (scheduledInfo) {
+                          return (
+                            <div style={{ marginTop: '8px', fontSize: '13px', color: '#9ca3af' }}>
+                              Scheduled: {scheduledInfo}
+                            </div>
+                          )
+                        }
+                        return null
+                      })()}
 
                       {/* Description hint */}
                       {task.description && (
@@ -1535,7 +1942,7 @@ function App() {
                         if (!checklistItems || checklistItems.length === 0) {
                           checklistItems = [{
                             id: 'placeholder-1',
-                            text: 'Add checklist item',
+                            text: '',
                             completed: false
                           }]
                         }
@@ -1580,7 +1987,7 @@ function App() {
                                 <input
                                   type="text"
                                   defaultValue={item.text}
-                                  placeholder={item.id === 'placeholder-1' ? 'Add checklist item' : 'Enter item...'}
+                                  placeholder="Enter item..."
                                   onClick={(e) => e.stopPropagation()}
                                   onKeyDown={(e) => {
                                     // Delete item on backspace if empty
@@ -1730,7 +2137,14 @@ function App() {
             </div>
 
             {/* Right Column - Deep Work & Schedule */}
-            <div style={{ width: '400px' }}>
+            <div
+              className="custom-scrollbar"
+              style={{
+              width: '400px',
+              flexShrink: 0,
+              overflowY: 'auto',
+              overflowX: 'hidden'
+            }}>
               {/* Deep Work Session */}
               <div style={{
                 backgroundColor: '#2a2a2a',
@@ -1746,7 +2160,7 @@ function App() {
 
                 {/* Task Dropdown (Searchable) */}
                 <div style={{ marginBottom: '16px', position: 'relative' }}>
-                  <label style={{ display: 'block', marginBottom: '8px', fontSize: '14px' }}>Task (Optional)</label>
+                  <label style={{ display: 'block', marginBottom: '8px', fontSize: '14px' }}>Task</label>
                   <input
                     type="text"
                     placeholder="Search tasks..."
@@ -1967,25 +2381,86 @@ function App() {
                 display: 'flex',
                 flexDirection: 'column'
               }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
-                  <h3 style={{ fontSize: '18px', color: '#eab308', flex: 1, textAlign: 'center', margin: 0 }}>Today's Schedule</h3>
-                  {Object.keys(scheduledTasks).length > 0 && (
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px', gap: '12px' }}>
+                  {/* Title with Date Navigation */}
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flex: 1, justifyContent: 'center' }}>
                     <button
-                      onClick={saveScheduleLog}
+                      onClick={() => {
+                        const currentDate = new Date(selectedScheduleDate)
+                        currentDate.setDate(currentDate.getDate() - 1)
+                        setSelectedScheduleDate(currentDate.toISOString().split('T')[0])
+                      }}
                       style={{
-                        padding: '8px 16px',
-                        backgroundColor: '#10b981',
+                        padding: '6px 12px',
+                        backgroundColor: '#374151',
                         color: 'white',
                         border: 'none',
                         borderRadius: '6px',
                         cursor: 'pointer',
-                        fontSize: '14px',
-                        fontWeight: '500'
+                        fontSize: '14px'
                       }}
                     >
-                      💾 Save
+                      ←
                     </button>
-                  )}
+
+                    <h3 style={{ fontSize: '20px', fontWeight: 'bold', color: '#eab308', margin: 0 }}>
+                      {(() => {
+                        const date = new Date(selectedScheduleDate + 'T00:00:00')
+                        const today = new Date()
+                        today.setHours(0, 0, 0, 0)
+                        const tomorrow = new Date(today)
+                        tomorrow.setDate(tomorrow.getDate() + 1)
+
+                        if (date.toDateString() === today.toDateString()) {
+                          return "Today's Schedule"
+                        } else if (date.toDateString() === tomorrow.toDateString()) {
+                          return "Tomorrow's Schedule"
+                        } else {
+                          return date.toLocaleDateString('en-US', { weekday: 'long', month: 'short', day: 'numeric' })
+                        }
+                      })()}
+                    </h3>
+
+                    <button
+                      onClick={() => {
+                        const currentDate = new Date(selectedScheduleDate)
+                        currentDate.setDate(currentDate.getDate() + 1)
+                        setSelectedScheduleDate(currentDate.toISOString().split('T')[0])
+                      }}
+                      style={{
+                        padding: '6px 12px',
+                        backgroundColor: '#374151',
+                        color: 'white',
+                        border: 'none',
+                        borderRadius: '6px',
+                        cursor: 'pointer',
+                        fontSize: '14px'
+                      }}
+                    >
+                      →
+                    </button>
+                  </div>
+
+                  <button
+                    onClick={saveScheduleLog}
+                    style={{
+                      padding: '6px 10px',
+                      backgroundColor: '#3b82f6',
+                      color: 'white',
+                      border: 'none',
+                      borderRadius: '6px',
+                      cursor: 'pointer',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center'
+                    }}
+                  >
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"></path>
+                      <polyline points="17 21 17 13 7 13 7 21"></polyline>
+                      <polyline points="7 3 7 8 15 8"></polyline>
+                    </svg>
+                  </button>
                 </div>
                 <div style={{
                   flex: 1,
@@ -2087,13 +2562,14 @@ function App() {
                                   left: '4px',
                                   right: '4px',
                                   height: `${taskHeight}px`,
-                                  backgroundColor: `${getAreaColor(task.area as Area)}99`,
+                                  backgroundColor: getAreaColor(task.area as Area),
                                   borderRadius: '4px',
-                                  border: `1px solid ${getAreaColor(task.area as Area)}`,
+                                  border: 'none',
                                   display: 'flex',
                                   flexDirection: 'column',
                                   overflow: 'hidden',
-                                  zIndex: 10
+                                  zIndex: 10,
+                                  opacity: task.status === 'Done' ? 0.5 : 1
                                 }}
                               >
                                 {/* Top resize/drag handle */}
@@ -2130,34 +2606,72 @@ function App() {
                                     color: 'white',
                                     fontSize: '11px',
                                     display: 'flex',
-                                    alignItems: 'flex-start',
-                                    justifyContent: 'space-between',
+                                    alignItems: 'stretch',
+                                    flexDirection: 'column',
+                                    gap: '4px',
                                     minHeight: 0
                                   }}
                                 >
-                                  <span style={{ fontWeight: '500', wordBreak: 'break-word' }}>
-                                    {task.task_name}
-                                  </span>
-                                  <button
-                                    onClick={() => {
-                                      // Remove task from this time slot
-                                      setScheduledTasks(prev => ({
-                                        ...prev,
-                                        [i]: prev[i].filter((_, idx) => idx !== index)
-                                      }))
-                                    }}
-                                    style={{
-                                      backgroundColor: 'transparent',
-                                      border: 'none',
-                                      color: '#ef4444',
-                                      cursor: 'pointer',
-                                      fontSize: '14px',
-                                      padding: '0 2px',
-                                      minWidth: '16px'
-                                    }}
-                                  >
-                                    ×
-                                  </button>
+                                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+                                    <span style={{
+                                      fontWeight: '500',
+                                      wordBreak: 'break-word',
+                                      textDecoration: task.status === 'Done' ? 'line-through' : 'none',
+                                      display: 'flex',
+                                      alignItems: 'center',
+                                      gap: '4px'
+                                    }}>
+                                      {task.status === 'Done' && '✓ '}
+                                      {task.task_name}
+                                    </span>
+                                    <button
+                                      onClick={() => {
+                                        // Remove task from this time slot
+                                        setScheduledTasks(prev => ({
+                                          ...prev,
+                                          [i]: prev[i].filter((_, idx) => idx !== index)
+                                        }))
+                                      }}
+                                      style={{
+                                        backgroundColor: 'transparent',
+                                        border: 'none',
+                                        color: '#ef4444',
+                                        cursor: 'pointer',
+                                        fontSize: '14px',
+                                        padding: '0 2px',
+                                        minWidth: '16px'
+                                      }}
+                                    >
+                                      ×
+                                    </button>
+                                  </div>
+
+                                  {/* Checklist items */}
+                                  {(() => {
+                                    try {
+                                      const checklistItems = task.checklist ? (typeof task.checklist === 'string' ? JSON.parse(task.checklist) : task.checklist) : []
+                                      if (checklistItems.length > 0) {
+                                        return (
+                                          <div style={{
+                                            fontSize: '10px',
+                                            color: '#d1d5db',
+                                            paddingLeft: '4px',
+                                            lineHeight: '1.3'
+                                          }}>
+                                            {checklistItems.map((item: any, idx: number) => (
+                                              <span key={idx} style={{ textDecoration: item.completed ? 'line-through' : 'none' }}>
+                                                {item.text}
+                                                {idx < checklistItems.length - 1 ? ', ' : ''}
+                                              </span>
+                                            ))}
+                                          </div>
+                                        )
+                                      }
+                                      return null
+                                    } catch {
+                                      return null
+                                    }
+                                  })()}
                                 </div>
 
                                 {/* Bottom resize handle */}
@@ -2235,25 +2749,81 @@ function App() {
                 display: 'flex',
                 flexDirection: 'column'
               }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
-                  <h3 style={{ fontSize: '20px', fontWeight: 'bold', color: '#eab308', margin: 0 }}>Today's Schedule</h3>
-                  {Object.keys(scheduledTasks).length > 0 && (
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px', gap: '12px' }}>
+                  {/* Title with Date Navigation */}
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '12px', flex: 1, justifyContent: 'center' }}>
                     <button
-                      onClick={saveScheduleLog}
+                      onClick={() => {
+                        const currentDate = new Date(selectedScheduleDate)
+                        currentDate.setDate(currentDate.getDate() - 1)
+                        setSelectedScheduleDate(currentDate.toISOString().split('T')[0])
+                      }}
                       style={{
-                        padding: '10px 20px',
-                        backgroundColor: '#10b981',
+                        padding: '8px 14px',
+                        backgroundColor: '#374151',
                         color: 'white',
                         border: 'none',
                         borderRadius: '8px',
                         cursor: 'pointer',
-                        fontSize: '14px',
-                        fontWeight: '600'
+                        fontSize: '16px'
                       }}
                     >
-                      💾 Save Schedule
+                      ←
                     </button>
-                  )}
+
+                    <h3 style={{ fontSize: '20px', fontWeight: 'bold', color: '#eab308', margin: 0 }}>
+                      {(() => {
+                        const date = new Date(selectedScheduleDate + 'T00:00:00')
+                        const today = new Date()
+                        today.setHours(0, 0, 0, 0)
+                        const tomorrow = new Date(today)
+                        tomorrow.setDate(tomorrow.getDate() + 1)
+
+                        if (date.toDateString() === today.toDateString()) {
+                          return "Today's Schedule"
+                        } else if (date.toDateString() === tomorrow.toDateString()) {
+                          return "Tomorrow's Schedule"
+                        } else {
+                          return date.toLocaleDateString('en-US', { weekday: 'long', month: 'short', day: 'numeric' })
+                        }
+                      })()}
+                    </h3>
+
+                    <button
+                      onClick={() => {
+                        const currentDate = new Date(selectedScheduleDate)
+                        currentDate.setDate(currentDate.getDate() + 1)
+                        setSelectedScheduleDate(currentDate.toISOString().split('T')[0])
+                      }}
+                      style={{
+                        padding: '8px 14px',
+                        backgroundColor: '#374151',
+                        color: 'white',
+                        border: 'none',
+                        borderRadius: '8px',
+                        cursor: 'pointer',
+                        fontSize: '16px'
+                      }}
+                    >
+                      →
+                    </button>
+                  </div>
+
+                  <button
+                    onClick={saveScheduleLog}
+                    style={{
+                      padding: '10px 20px',
+                      backgroundColor: '#10b981',
+                      color: 'white',
+                      border: 'none',
+                      borderRadius: '8px',
+                      cursor: 'pointer',
+                      fontSize: '14px',
+                      fontWeight: '600'
+                    }}
+                  >
+                    💾 Save
+                  </button>
                 </div>
                 <div style={{
                   flex: 1,
@@ -2355,13 +2925,14 @@ function App() {
                                   left: '4px',
                                   right: '4px',
                                   height: `${taskHeight}px`,
-                                  backgroundColor: `${getAreaColor(task.area as Area)}99`,
+                                  backgroundColor: getAreaColor(task.area as Area),
                                   borderRadius: '4px',
-                                  border: `1px solid ${getAreaColor(task.area as Area)}`,
+                                  border: 'none',
                                   display: 'flex',
                                   flexDirection: 'column',
                                   overflow: 'hidden',
-                                  zIndex: 10
+                                  zIndex: 10,
+                                  opacity: task.status === 'Done' ? 0.5 : 1
                                 }}
                               >
                                 {/* Top resize/drag handle */}
@@ -2398,34 +2969,72 @@ function App() {
                                     color: 'white',
                                     fontSize: '11px',
                                     display: 'flex',
-                                    alignItems: 'flex-start',
-                                    justifyContent: 'space-between',
+                                    alignItems: 'stretch',
+                                    flexDirection: 'column',
+                                    gap: '4px',
                                     minHeight: 0
                                   }}
                                 >
-                                  <span style={{ fontWeight: '500', wordBreak: 'break-word' }}>
-                                    {task.task_name}
-                                  </span>
-                                  <button
-                                    onClick={() => {
-                                      // Remove task from this time slot
-                                      setScheduledTasks(prev => ({
-                                        ...prev,
-                                        [i]: prev[i].filter((_, idx) => idx !== index)
-                                      }))
-                                    }}
-                                    style={{
-                                      backgroundColor: 'transparent',
-                                      border: 'none',
-                                      color: '#ef4444',
-                                      cursor: 'pointer',
-                                      fontSize: '14px',
-                                      padding: '0 2px',
-                                      minWidth: '16px'
-                                    }}
-                                  >
-                                    ×
-                                  </button>
+                                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+                                    <span style={{
+                                      fontWeight: '500',
+                                      wordBreak: 'break-word',
+                                      textDecoration: task.status === 'Done' ? 'line-through' : 'none',
+                                      display: 'flex',
+                                      alignItems: 'center',
+                                      gap: '4px'
+                                    }}>
+                                      {task.status === 'Done' && '✓ '}
+                                      {task.task_name}
+                                    </span>
+                                    <button
+                                      onClick={() => {
+                                        // Remove task from this time slot
+                                        setScheduledTasks(prev => ({
+                                          ...prev,
+                                          [i]: prev[i].filter((_, idx) => idx !== index)
+                                        }))
+                                      }}
+                                      style={{
+                                        backgroundColor: 'transparent',
+                                        border: 'none',
+                                        color: '#ef4444',
+                                        cursor: 'pointer',
+                                        fontSize: '14px',
+                                        padding: '0 2px',
+                                        minWidth: '16px'
+                                      }}
+                                    >
+                                      ×
+                                    </button>
+                                  </div>
+
+                                  {/* Checklist items */}
+                                  {(() => {
+                                    try {
+                                      const checklistItems = task.checklist ? (typeof task.checklist === 'string' ? JSON.parse(task.checklist) : task.checklist) : []
+                                      if (checklistItems.length > 0) {
+                                        return (
+                                          <div style={{
+                                            fontSize: '10px',
+                                            color: '#d1d5db',
+                                            paddingLeft: '4px',
+                                            lineHeight: '1.3'
+                                          }}>
+                                            {checklistItems.map((item: any, idx: number) => (
+                                              <span key={idx} style={{ textDecoration: item.completed ? 'line-through' : 'none' }}>
+                                                {item.text}
+                                                {idx < checklistItems.length - 1 ? ', ' : ''}
+                                              </span>
+                                            ))}
+                                          </div>
+                                        )
+                                      }
+                                      return null
+                                    } catch {
+                                      return null
+                                    }
+                                  })()}
                                 </div>
 
                                 {/* Bottom resize handle */}
@@ -2614,11 +3223,11 @@ function App() {
               {Object.entries(effortLevelCounts).map(([level, count]) => {
                 const getEffortLevelColor = (levelName: string) => {
                   if (levelName === 'All Levels') return '#60a5fa'
-                  if (levelName === '$$$ MoneyMaker') return '#10b981'
-                  if (levelName === '$ Lil Money') return '#3b82f6'
-                  if (levelName === '-$ Save Dat Money') return '#f97316'
-                  if (levelName === ':( Pointless') return '#ef4444'
-                  if (levelName === '8) JusVibin') return '#a855f7'
+                  if (levelName === '$$$ Printer $$$') return '#22c55e'
+                  if (levelName === '$ Makes Money $') return '#15803d'
+                  if (levelName === '-$ Save Dat $-') return '#fb923c'
+                  if (levelName === ':( No Money ):') return '#ef4444'
+                  if (levelName === '8) Vibing (8') return '#a855f7'
                   return '#9ca3af'
                 }
 
@@ -2807,9 +3416,11 @@ function App() {
               {/* Deep Work Session Log */}
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
                 <h3 style={{ fontSize: '18px', fontWeight: 'bold' }}>Deep Work Session Log</h3>
-                <button style={{
+                <button
+                  onClick={startAddingNewSession}
+                  style={{
                   padding: '10px 20px',
-                  backgroundColor: '#3b82f6',
+                  backgroundColor: '#f97316',
                   color: 'white',
                   border: 'none',
                   borderRadius: '8px',
@@ -2817,7 +3428,7 @@ function App() {
                   fontWeight: '500',
                   fontSize: '14px'
                 }}>
-                  ➕ Add Deep Work Session
+                  Add Deep Work Session
                 </button>
               </div>
               <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
@@ -2892,7 +3503,16 @@ function App() {
                           </span>
                         </div>
                         <div style={{ flex: 1 }}>
-                          <span style={{ backgroundColor: 'rgba(0,0,0,0.2)', padding: '4px 10px', borderRadius: '4px', fontSize: '12px' }}>{sessionItem.effort_level || 'N/A'}</span>
+                          <span style={{
+                            backgroundColor: sessionItem.effort_level ? getEffortLevelColor(sessionItem.effort_level) : 'rgba(0,0,0,0.2)',
+                            color: 'white',
+                            padding: '4px 10px',
+                            borderRadius: '4px',
+                            fontSize: '12px',
+                            fontWeight: '500'
+                          }}>
+                            {sessionItem.effort_level || 'N/A'}
+                          </span>
                         </div>
                         <div style={{ fontSize: '13px', opacity: 0.7, fontStyle: 'italic' }}>{sessionItem.notes || 'No notes'}</div>
                       </div>
@@ -2903,6 +3523,7 @@ function App() {
             </div>
           </>
         )}
+        </div>
           </>
         )}
 
@@ -2913,7 +3534,6 @@ function App() {
           </div>
         )}
       </div>
-    </div>
 
       {/* Edit Deep Work Session Modal */}
       {editingSessionId && (
@@ -2951,7 +3571,9 @@ function App() {
               justifyContent: 'space-between',
               alignItems: 'center'
             }}>
-              <h3 style={{ fontSize: '18px', fontWeight: 'bold', color: '#fff' }}>Edit Deep Work Session</h3>
+              <h3 style={{ fontSize: '18px', fontWeight: 'bold', color: '#fff' }}>
+                {editingSessionId === 'new' ? 'Add New Deep Work Session' : 'Edit Deep Work Session'}
+              </h3>
               <button
                 onClick={cancelEditingSession}
                 style={{
@@ -2974,6 +3596,142 @@ function App() {
 
             {/* Modal Body */}
             <div style={{ padding: '24px' }}>
+              {/* Task */}
+              <div style={{ marginBottom: '20px', position: 'relative' }}>
+                <label style={{ display: 'block', fontSize: '13px', color: '#fff', marginBottom: '8px', fontWeight: '500' }}>
+                  Task
+                </label>
+                <div style={{ position: 'relative' }}>
+                  <input
+                    type="text"
+                    placeholder="Search tasks..."
+                    value={editTaskSearchTerm}
+                    onChange={(e) => {
+                      setEditTaskSearchTerm(e.target.value)
+                      setShowEditTaskDropdown(true)
+                      setEditFormData({ ...editFormData, task_name: e.target.value, task_id: null })
+                    }}
+                    onFocus={() => setShowEditTaskDropdown(true)}
+                    onBlur={() => setTimeout(() => setShowEditTaskDropdown(false), 200)}
+                    style={{
+                      width: '100%',
+                      padding: '10px 12px',
+                      paddingLeft: editFormData.task_id ? '32px' : '12px',
+                      backgroundColor: '#2a2a2a',
+                      color: 'white',
+                      border: '1px solid #444',
+                      borderRadius: '8px',
+                      fontSize: '14px'
+                    }}
+                  />
+                  {editFormData.task_id && (
+                    <div style={{
+                      position: 'absolute',
+                      left: '12px',
+                      top: '50%',
+                      transform: 'translateY(-50%)',
+                      width: '8px',
+                      height: '8px',
+                      borderRadius: '50%',
+                      backgroundColor: (() => {
+                        const task = tasks.find(t => t.id === editFormData.task_id)
+                        return task ? getAreaColor(task.area) : '#6b7280'
+                      })()
+                    }} />
+                  )}
+                </div>
+
+                {/* Task Dropdown */}
+                {showEditTaskDropdown && (
+                  <div style={{
+                    position: 'absolute',
+                    top: '100%',
+                    left: 0,
+                    right: 0,
+                    backgroundColor: '#1a1a1a',
+                    border: '1px solid #444',
+                    borderRadius: '4px',
+                    marginTop: '4px',
+                    maxHeight: '200px',
+                    overflowY: 'auto',
+                    zIndex: 100
+                  }}>
+                    {tasks
+                      .filter(t =>
+                        t.task_name.toLowerCase().includes(editTaskSearchTerm.toLowerCase()) &&
+                        t.status !== 'completed'
+                      )
+                      .slice(0, 5)
+                      .map(task => (
+                        <div
+                          key={task.id}
+                          onClick={() => {
+                            setEditFormData({
+                              ...editFormData,
+                              task_id: task.id,
+                              task_name: task.task_name,
+                              area: task.area,
+                              task_type: task.task_type
+                            })
+                            setEditTaskSearchTerm(task.task_name)
+                            setShowEditTaskDropdown(false)
+                          }}
+                          style={{
+                            padding: '8px 12px',
+                            cursor: 'pointer',
+                            borderBottom: '1px solid #333',
+                            ':hover': {
+                              backgroundColor: '#2a2a2a'
+                            }
+                          }}
+                          onMouseEnter={(e) => e.currentTarget.style.backgroundColor = '#2a2a2a'}
+                          onMouseLeave={(e) => e.currentTarget.style.backgroundColor = 'transparent'}
+                        >
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                            <div style={{
+                              width: '8px',
+                              height: '8px',
+                              borderRadius: '50%',
+                              backgroundColor: getAreaColor(task.area),
+                              flexShrink: 0
+                            }} />
+                            <div style={{ flex: 1 }}>
+                              <div style={{ fontSize: '13px', color: '#fff' }}>{task.task_name}</div>
+                              <div style={{ fontSize: '11px', color: '#6b7280' }}>{task.area}</div>
+                            </div>
+                          </div>
+                        </div>
+                      ))}
+
+                    {editTaskSearchTerm && (
+                      <div
+                        onClick={() => {
+                          setEditFormData({
+                            ...editFormData,
+                            task_id: null,
+                            task_name: editTaskSearchTerm
+                          })
+                          setShowEditTaskDropdown(false)
+                        }}
+                        style={{
+                          padding: '8px 12px',
+                          cursor: 'pointer',
+                          fontSize: '13px',
+                          color: '#60a5fa',
+                          ':hover': {
+                            backgroundColor: '#2a2a2a'
+                          }
+                        }}
+                        onMouseEnter={(e) => e.currentTarget.style.backgroundColor = '#2a2a2a'}
+                        onMouseLeave={(e) => e.currentTarget.style.backgroundColor = 'transparent'}
+                      >
+                        + Use "{editTaskSearchTerm}" as custom task
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+
               {/* Focus Area */}
               <div style={{ marginBottom: '20px' }}>
                 <label style={{ display: 'block', fontSize: '13px', color: '#fff', marginBottom: '8px', fontWeight: '500' }}>
@@ -3023,28 +3781,6 @@ function App() {
                 />
               </div>
 
-              {/* Task (Optional) */}
-              <div style={{ marginBottom: '20px' }}>
-                <label style={{ display: 'block', fontSize: '13px', color: '#fff', marginBottom: '8px', fontWeight: '500' }}>
-                  Task (Optional)
-                </label>
-                <input
-                  type="text"
-                  value={editFormData.task_name || ''}
-                  placeholder="Task name..."
-                  onChange={(e) => setEditFormData({ ...editFormData, task_name: e.target.value })}
-                  style={{
-                    width: '100%',
-                    padding: '10px 12px',
-                    backgroundColor: '#2a2a2a',
-                    color: 'white',
-                    border: '1px solid #444',
-                    borderRadius: '8px',
-                    fontSize: '14px'
-                  }}
-                />
-              </div>
-
               {/* Money Maker Level */}
               <div style={{ marginBottom: '20px' }}>
                 <label style={{ display: 'block', fontSize: '13px', color: '#fff', marginBottom: '8px', fontWeight: '500' }}>
@@ -3064,11 +3800,11 @@ function App() {
                   }}
                 >
                   <option value="">Select level...</option>
-                  <option value="$$$ MoneyMaker">$$$ MoneyMaker</option>
-                  <option value="$ Lil Money">$ Lil Money</option>
-                  <option value="-$ Save Dat Money">-$ Save Dat Money</option>
-                  <option value=":( Pointless">:( Pointless</option>
-                  <option value="8) JusVibin">8) JusVibin</option>
+                  <option value="$$$ Printer $$$" style={{ color: '#22c55e' }}>$$$ Printer $$$</option>
+                  <option value="$ Makes Money $" style={{ color: '#15803d' }}>$ Makes Money $</option>
+                  <option value="-$ Save Dat $-" style={{ color: '#fb923c' }}>-$ Save Dat $-</option>
+                  <option value=":( No Money ):" style={{ color: '#ef4444' }}>:( No Money ):</option>
+                  <option value="8) Vibing (8" style={{ color: '#a855f7' }}>8) Vibing (8</option>
                 </select>
               </div>
 
@@ -3102,42 +3838,94 @@ function App() {
                   Start Time
                 </label>
                 <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
-                  <input
-                    type="date"
-                    value={editFormData.start_time ? new Date(editFormData.start_time).toISOString().split('T')[0] : ''}
-                    onChange={(e) => {
-                      const date = new Date(editFormData.start_time || new Date())
-                      const newDate = new Date(e.target.value)
-                      date.setFullYear(newDate.getFullYear(), newDate.getMonth(), newDate.getDate())
-                      setEditFormData({ ...editFormData, start_time: date.toISOString() })
+                  <div
+                    onClick={() => {
+                      const input = document.getElementById('start-date-input') as HTMLInputElement
+                      if (input) input.showPicker()
                     }}
                     style={{
-                      padding: '10px 12px',
-                      backgroundColor: '#2a2a2a',
-                      color: 'white',
-                      border: '1px solid #444',
-                      borderRadius: '8px',
-                      fontSize: '14px'
+                      position: 'relative',
+                      cursor: 'pointer'
                     }}
-                  />
-                  <input
-                    type="time"
-                    value={editFormData.start_time ? new Date(editFormData.start_time).toTimeString().slice(0, 5) : ''}
-                    onChange={(e) => {
-                      const date = new Date(editFormData.start_time || new Date())
-                      const [hours, minutes] = e.target.value.split(':')
-                      date.setHours(parseInt(hours), parseInt(minutes))
-                      setEditFormData({ ...editFormData, start_time: date.toISOString() })
+                  >
+                    <input
+                      id="start-date-input"
+                      type="date"
+                      value={editFormData.start_time ? new Date(editFormData.start_time).toISOString().split('T')[0] : ''}
+                      onChange={(e) => {
+                        if (!e.target.value) return
+                        const currentTime = editFormData.start_time ? new Date(editFormData.start_time) : new Date()
+                        const [year, month, day] = e.target.value.split('-')
+                        const newDate = new Date(currentTime)
+                        newDate.setFullYear(parseInt(year), parseInt(month) - 1, parseInt(day))
+                        const newStartTime = newDate.toISOString()
+
+                        // Calculate new duration if end time exists
+                        let newFormData = { ...editFormData, start_time: newStartTime }
+                        if (editFormData.end_time) {
+                          const endTime = new Date(editFormData.end_time)
+                          const duration = Math.floor((endTime.getTime() - newDate.getTime()) / (1000 * 60))
+                          newFormData.duration_minutes = Math.max(0, duration)
+                        }
+                        setEditFormData(newFormData)
+                      }}
+                      style={{
+                        width: '100%',
+                        padding: '10px 12px',
+                        backgroundColor: '#2a2a2a',
+                        color: 'white',
+                        border: '1px solid #444',
+                        borderRadius: '8px',
+                        fontSize: '14px',
+                        cursor: 'pointer',
+                        pointerEvents: 'none'
+                      }}
+                    />
+                  </div>
+                  <div
+                    onClick={() => {
+                      const input = document.getElementById('start-time-input') as HTMLInputElement
+                      if (input) input.showPicker()
                     }}
                     style={{
-                      padding: '10px 12px',
-                      backgroundColor: '#2a2a2a',
-                      color: 'white',
-                      border: '1px solid #444',
-                      borderRadius: '8px',
-                      fontSize: '14px'
+                      position: 'relative',
+                      cursor: 'pointer'
                     }}
-                  />
+                  >
+                    <input
+                      id="start-time-input"
+                      type="time"
+                      step="900"
+                      value={editFormData.start_time ? new Date(editFormData.start_time).toTimeString().slice(0, 5) : ''}
+                      onChange={(e) => {
+                        if (!e.target.value) return
+                        const [hours, minutes] = e.target.value.split(':')
+                        const date = editFormData.start_time ? new Date(editFormData.start_time) : new Date()
+                        date.setHours(parseInt(hours), parseInt(minutes), 0, 0)
+                        const newStartTime = date.toISOString()
+
+                        // Calculate new duration if end time exists
+                        let newFormData = { ...editFormData, start_time: newStartTime }
+                        if (editFormData.end_time) {
+                          const endTime = new Date(editFormData.end_time)
+                          const duration = Math.floor((endTime.getTime() - date.getTime()) / (1000 * 60))
+                          newFormData.duration_minutes = Math.max(0, duration)
+                        }
+                        setEditFormData(newFormData)
+                      }}
+                      style={{
+                        width: '100%',
+                        padding: '10px 12px',
+                        backgroundColor: '#2a2a2a',
+                        color: 'white',
+                        border: '1px solid #444',
+                        borderRadius: '8px',
+                        fontSize: '14px',
+                        cursor: 'pointer',
+                        pointerEvents: 'none'
+                      }}
+                    />
+                  </div>
                 </div>
                 <div style={{ fontSize: '11px', color: '#6b7280', marginTop: '4px' }}>
                   Current: {editFormData.start_time ? new Date(editFormData.start_time).toLocaleString() : 'N/A'}
@@ -3150,42 +3938,94 @@ function App() {
                   End Time
                 </label>
                 <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
-                  <input
-                    type="date"
-                    value={editFormData.end_time ? new Date(editFormData.end_time).toISOString().split('T')[0] : ''}
-                    onChange={(e) => {
-                      const date = new Date(editFormData.end_time || new Date())
-                      const newDate = new Date(e.target.value)
-                      date.setFullYear(newDate.getFullYear(), newDate.getMonth(), newDate.getDate())
-                      setEditFormData({ ...editFormData, end_time: date.toISOString() })
+                  <div
+                    onClick={() => {
+                      const input = document.getElementById('end-date-input') as HTMLInputElement
+                      if (input) input.showPicker()
                     }}
                     style={{
-                      padding: '10px 12px',
-                      backgroundColor: '#2a2a2a',
-                      color: 'white',
-                      border: '1px solid #444',
-                      borderRadius: '8px',
-                      fontSize: '14px'
+                      position: 'relative',
+                      cursor: 'pointer'
                     }}
-                  />
-                  <input
-                    type="time"
-                    value={editFormData.end_time ? new Date(editFormData.end_time).toTimeString().slice(0, 5) : ''}
-                    onChange={(e) => {
-                      const date = new Date(editFormData.end_time || new Date())
-                      const [hours, minutes] = e.target.value.split(':')
-                      date.setHours(parseInt(hours), parseInt(minutes))
-                      setEditFormData({ ...editFormData, end_time: date.toISOString() })
+                  >
+                    <input
+                      id="end-date-input"
+                      type="date"
+                      value={editFormData.end_time ? new Date(editFormData.end_time).toISOString().split('T')[0] : ''}
+                      onChange={(e) => {
+                        if (!e.target.value) return
+                        const currentTime = editFormData.end_time ? new Date(editFormData.end_time) : new Date()
+                        const [year, month, day] = e.target.value.split('-')
+                        const newDate = new Date(currentTime)
+                        newDate.setFullYear(parseInt(year), parseInt(month) - 1, parseInt(day))
+                        const newEndTime = newDate.toISOString()
+
+                        // Calculate new duration if start time exists
+                        let newFormData = { ...editFormData, end_time: newEndTime }
+                        if (editFormData.start_time) {
+                          const startTime = new Date(editFormData.start_time)
+                          const duration = Math.floor((newDate.getTime() - startTime.getTime()) / (1000 * 60))
+                          newFormData.duration_minutes = Math.max(0, duration)
+                        }
+                        setEditFormData(newFormData)
+                      }}
+                      style={{
+                        width: '100%',
+                        padding: '10px 12px',
+                        backgroundColor: '#2a2a2a',
+                        color: 'white',
+                        border: '1px solid #444',
+                        borderRadius: '8px',
+                        fontSize: '14px',
+                        cursor: 'pointer',
+                        pointerEvents: 'none'
+                      }}
+                    />
+                  </div>
+                  <div
+                    onClick={() => {
+                      const input = document.getElementById('end-time-input') as HTMLInputElement
+                      if (input) input.showPicker()
                     }}
                     style={{
-                      padding: '10px 12px',
-                      backgroundColor: '#2a2a2a',
-                      color: 'white',
-                      border: '1px solid #444',
-                      borderRadius: '8px',
-                      fontSize: '14px'
+                      position: 'relative',
+                      cursor: 'pointer'
                     }}
-                  />
+                  >
+                    <input
+                      id="end-time-input"
+                      type="time"
+                      step="900"
+                      value={editFormData.end_time ? new Date(editFormData.end_time).toTimeString().slice(0, 5) : ''}
+                      onChange={(e) => {
+                        if (!e.target.value) return
+                        const [hours, minutes] = e.target.value.split(':')
+                        const date = editFormData.end_time ? new Date(editFormData.end_time) : new Date()
+                        date.setHours(parseInt(hours), parseInt(minutes), 0, 0)
+                        const newEndTime = date.toISOString()
+
+                        // Calculate new duration if start time exists
+                        let newFormData = { ...editFormData, end_time: newEndTime }
+                        if (editFormData.start_time) {
+                          const startTime = new Date(editFormData.start_time)
+                          const duration = Math.floor((date.getTime() - startTime.getTime()) / (1000 * 60))
+                          newFormData.duration_minutes = Math.max(0, duration)
+                        }
+                        setEditFormData(newFormData)
+                      }}
+                      style={{
+                        width: '100%',
+                        padding: '10px 12px',
+                        backgroundColor: '#2a2a2a',
+                        color: 'white',
+                        border: '1px solid #444',
+                        borderRadius: '8px',
+                        fontSize: '14px',
+                        cursor: 'pointer',
+                        pointerEvents: 'none'
+                      }}
+                    />
+                  </div>
                 </div>
                 <div style={{ fontSize: '11px', color: '#6b7280', marginTop: '4px' }}>
                   Current: {editFormData.end_time ? new Date(editFormData.end_time).toLocaleString() : 'N/A'}
@@ -3224,21 +4064,25 @@ function App() {
               justifyContent: 'space-between',
               alignItems: 'center'
             }}>
-              <button
-                onClick={() => deleteSession(editingSessionId)}
-                style={{
-                  padding: '10px 20px',
-                  backgroundColor: '#dc2626',
-                  color: 'white',
-                  border: 'none',
-                  borderRadius: '8px',
-                  cursor: 'pointer',
-                  fontSize: '14px',
-                  fontWeight: '500'
-                }}
-              >
-                Delete Session
-              </button>
+              {editingSessionId !== 'new' ? (
+                <button
+                  onClick={() => deleteSession(editingSessionId)}
+                  style={{
+                    padding: '10px 20px',
+                    backgroundColor: '#dc2626',
+                    color: 'white',
+                    border: 'none',
+                    borderRadius: '8px',
+                    cursor: 'pointer',
+                    fontSize: '14px',
+                    fontWeight: '500'
+                  }}
+                >
+                  Delete Session
+                </button>
+              ) : (
+                <div></div>
+              )}
               <div style={{ display: 'flex', gap: '12px' }}>
                 <button
                   onClick={cancelEditingSession}
@@ -3268,7 +4112,7 @@ function App() {
                     fontWeight: '500'
                   }}
                 >
-                  Save Changes
+                  {editingSessionId === 'new' ? 'Add Session' : 'Save Changes'}
                 </button>
               </div>
             </div>
@@ -3532,10 +4376,11 @@ function App() {
                   }}
                 >
                   <option value="">Select money maker...</option>
-                  <option value="$ Lil Money">$ Lil Money</option>
-                  <option value="$$ Some Money">$$ Some Money</option>
-                  <option value="$$$ Big Money">$$$ Big Money</option>
-                  <option value="$$$$ Huge Money">$$$$ Huge Money</option>
+                  <option value="$$$ Printer $$$" style={{ color: '#22c55e' }}>$$$ Printer $$$</option>
+                  <option value="$ Makes Money $" style={{ color: '#15803d' }}>$ Makes Money $</option>
+                  <option value="-$ Save Dat $-" style={{ color: '#fb923c' }}>-$ Save Dat $-</option>
+                  <option value=":( No Money ):" style={{ color: '#ef4444' }}>:( No Money ):</option>
+                  <option value="8) Vibing (8" style={{ color: '#a855f7' }}>8) Vibing (8</option>
                 </select>
               </div>
             </div>
@@ -3668,7 +4513,7 @@ function App() {
                         status: 'Not started',
                         automation: 'Manual',
                         priority: taskFormData.priority || 'Medium',
-                        effort_level: taskFormData.effort_level || '$ Lil Money',
+                        effort_level: taskFormData.effort_level || '$ Makes Money $',
                         due_date: taskFormData.due_date || null,
                         user_id: session?.user.id,
                         'Hours Projected': taskFormData.hours_projected || 0,
