@@ -107,6 +107,32 @@ const TodoList = () => {
     }
   }
 
+  const toggleChecklistItem = async (taskId: string, checklistItemId: string) => {
+    try {
+      const task = tasks.find(t => t.id === taskId)
+      if (!task) return
+
+      const updatedChecklist = task.checklist.map(item =>
+        item.id === checklistItemId ? { ...item, completed: !item.completed } : item
+      )
+
+      const { error } = await supabase
+        .from('TG To Do List')
+        .update({
+          checklist: JSON.stringify(updatedChecklist)
+        })
+        .eq('id', taskId)
+
+      if (error) throw error
+
+      setTasks(prev => prev.map(t =>
+        t.id === taskId ? { ...t, checklist: updatedChecklist } : t
+      ))
+    } catch (error) {
+      console.error('Error toggling checklist item:', error)
+    }
+  }
+
   const deleteTodo = async (id: string) => {
     try {
       const { error } = await supabase
@@ -499,6 +525,11 @@ const TodoList = () => {
                         {task.task_type}
                       </span>
                     )}
+                    {task.effort_level && (
+                      <span className="px-2 py-1 rounded text-xs font-medium bg-green-100 text-green-700">
+                        {task.effort_level}
+                      </span>
+                    )}
                     {task.due_date && (
                       <span className={`text-xs flex items-center gap-1 ${
                         isToday(task.due_date) ? 'text-yellow-600 font-medium' :
@@ -515,6 +546,38 @@ const TodoList = () => {
                       </span>
                     )}
                   </div>
+
+                  {/* Created Date */}
+                  {task.created_at && (
+                    <div className="text-xs text-gray-500 mt-2 font-medium">
+                      Created: {format(task.created_at, 'MMM d, yyyy')}
+                    </div>
+                  )}
+
+                  {/* Checklist */}
+                  {task.checklist && task.checklist.length > 0 && (
+                    <div className="mt-3 space-y-1">
+                      {task.checklist.map((item) => (
+                        <div key={item.id} className="flex items-center gap-2">
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation()
+                              // Toggle checklist item - we'll implement this function
+                              toggleChecklistItem(task.id, item.id)
+                            }}
+                            className={`w-4 h-4 rounded-full border-2 flex items-center justify-center flex-shrink-0 ${
+                              item.completed ? 'bg-blue-500 border-blue-500' : 'border-gray-300'
+                            }`}
+                          >
+                            {item.completed && <div className="w-2 h-2 bg-white rounded-full" />}
+                          </button>
+                          <span className={`text-sm ${item.completed ? 'line-through text-gray-400' : 'text-gray-700'}`}>
+                            {item.text}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
                 </div>
 
                 {/* Actions */}
@@ -685,7 +748,49 @@ const TodoList = () => {
             {/* Checklist Items */}
             <div className="mb-6">
               <label className="block text-sm font-medium text-gray-300 mb-2">Checklist Items</label>
-              <div className="text-sm text-gray-400">Click 'Add Item' to add more checklist items (max 6)</div>
+              <div className="space-y-2">
+                {(editFormData.checklist || []).map((item: any, index: number) => (
+                  <div key={item.id} className="flex items-center gap-2">
+                    <input
+                      type="text"
+                      value={item.text}
+                      onChange={(e) => {
+                        const updatedChecklist = [...(editFormData.checklist || [])]
+                        updatedChecklist[index] = { ...item, text: e.target.value }
+                        setEditFormData({...editFormData, checklist: updatedChecklist})
+                      }}
+                      placeholder={`Item ${index + 1}...`}
+                      className="flex-1 px-3 py-2 bg-gray-800 text-white border border-gray-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    />
+                    <button
+                      onClick={() => {
+                        const updatedChecklist = (editFormData.checklist || []).filter((_: any, i: number) => i !== index)
+                        setEditFormData({...editFormData, checklist: updatedChecklist})
+                      }}
+                      className="p-2 text-red-400 hover:text-red-300 hover:bg-red-900/20 rounded-lg transition-colors"
+                    >
+                      <Trash2 className="w-4 h-4" />
+                    </button>
+                  </div>
+                ))}
+              </div>
+              {(!editFormData.checklist || editFormData.checklist.length < 6) && (
+                <button
+                  onClick={() => {
+                    const currentChecklist = editFormData.checklist || []
+                    const newItem = {
+                      id: `checklist-${Date.now()}-${Math.random()}`,
+                      text: '',
+                      completed: false
+                    }
+                    setEditFormData({...editFormData, checklist: [...currentChecklist, newItem]})
+                  }}
+                  className="mt-2 px-3 py-1.5 text-sm bg-gray-700 text-gray-300 rounded-lg hover:bg-gray-600 transition-colors flex items-center gap-1"
+                >
+                  <Plus className="w-4 h-4" />
+                  Add Item {editFormData.checklist?.length ? `(${editFormData.checklist.length}/6)` : '(0/6)'}
+                </button>
+              )}
             </div>
 
             {/* Action Buttons */}
