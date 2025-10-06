@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react'
 import { supabase } from './lib/supabase'
+import ContentLibrary from './components/ContentLibrary'
 
 type Area = 'Full Stack' | 'S4' | '808' | 'Personal' | 'Huge Capital' | 'Golf' | 'Health'
 type EffortLevel = '$$$ MoneyMaker' | '$ Lil Money' | '$$ Some Money' | '$$$ Big Money' | '$$$$ Huge Money' | '-$ Save Dat Money' | ':( Pointless' | '8) JusVibin'
@@ -42,7 +43,7 @@ function App() {
   const [deepWorkSessions, setDeepWorkSessions] = useState<any[]>([])
   const [selectedArea, setSelectedArea] = useState<Area | 'All Areas'>('All Areas')
   const [scheduledTasks, setScheduledTasks] = useState<{[hour: number]: {task: Task, duration: number}[]}>({})  // Track tasks with duration (in 30-min slots)
-  const [activeMainTab, setActiveMainTab] = useState<'daily'>('daily')
+  const [activeMainTab, setActiveMainTab] = useState<'daily' | 'content'>('daily')
   const [activeSubTab, setActiveSubTab] = useState<'todo' | 'schedule' | 'deepwork'>('todo')
   const [selectedTimePeriod, setSelectedTimePeriod] = useState<'All Time' | 'Today' | 'This Week' | 'This Month'>('All Time')
   const [selectedDWArea, setSelectedDWArea] = useState<Area | 'All Areas'>('All Areas')
@@ -941,6 +942,36 @@ function App() {
               Daily
             </button>
           </div>
+
+          {/* Main Tab - Content Library */}
+          <div style={{ marginBottom: '8px' }}>
+            <button
+              onClick={() => setActiveMainTab('content')}
+              style={{
+                width: '100%',
+                padding: '12px 16px',
+                backgroundColor: activeMainTab === 'content' ? '#10b981' : 'transparent',
+                color: activeMainTab === 'content' ? 'white' : '#10b981',
+                border: 'none',
+                borderRadius: '8px',
+                cursor: 'pointer',
+                fontWeight: '600',
+                fontSize: '15px',
+                textAlign: 'left',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '8px'
+              }}
+            >
+              <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="2">
+                <path d="M2 3h12M2 8h12M2 13h12" />
+                <circle cx="5" cy="3" r="1" fill="currentColor" />
+                <circle cx="5" cy="8" r="1" fill="currentColor" />
+                <circle cx="5" cy="13" r="1" fill="currentColor" />
+              </svg>
+              Content Library
+            </button>
+          </div>
         </div>
 
         {/* User Profile / Sign Out */}
@@ -988,16 +1019,18 @@ function App() {
 
       {/* Main Content Area */}
       <div style={{ flex: 1, display: 'flex', flexDirection: 'column' }}>
-        {/* Header with Tabs */}
-        <div style={{
-          backgroundColor: '#1a1a1a',
-          borderBottom: '1px solid #2a2a2a',
-          padding: '16px 24px',
-          display: 'flex',
-          gap: '12px',
-          alignItems: 'center'
-        }}>
-          <button
+        {activeMainTab === 'daily' && (
+          <>
+            {/* Header with Tabs */}
+            <div style={{
+              backgroundColor: '#1a1a1a',
+              borderBottom: '1px solid #2a2a2a',
+              padding: '16px 24px',
+              display: 'flex',
+              gap: '12px',
+              alignItems: 'center'
+            }}>
+              <button
             onClick={() => setActiveSubTab('todo')}
             style={{
               padding: '10px 20px',
@@ -2869,6 +2902,15 @@ function App() {
               </div>
             </div>
           </>
+        )}
+          </>
+        )}
+
+        {/* Content Library Tab */}
+        {activeMainTab === 'content' && (
+          <div style={{ flex: 1, overflowY: 'auto' }}>
+            <ContentLibrary />
+          </div>
         )}
       </div>
     </div>
