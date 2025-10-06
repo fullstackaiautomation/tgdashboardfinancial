@@ -6,6 +6,12 @@ type EffortLevel = '$$$ MoneyMaker' | '$ Lil Money' | '$$ Some Money' | '$$$ Big
 type Priority = 'Low' | 'Medium' | 'High'
 type RecurringType = 'none' | 'daily' | 'daily_weekdays' | 'weekly' | 'monthly' | 'custom'
 
+interface ChecklistItem {
+  id: string
+  text: string
+  completed: boolean
+}
+
 interface Task {
   id: string
   task_name: string
@@ -22,6 +28,8 @@ interface Task {
   hours_worked: number | undefined
   recurring_template: string | null
   recurring_type: RecurringType | undefined
+  created_at: string | null
+  checklist: ChecklistItem[]
 }
 
 function App() {
@@ -33,6 +41,7 @@ function App() {
   const [tasks, setTasks] = useState<Task[]>([])
   const [deepWorkSessions, setDeepWorkSessions] = useState<any[]>([])
   const [selectedArea, setSelectedArea] = useState<Area | 'All Areas'>('All Areas')
+  const [scheduledTasks, setScheduledTasks] = useState<{[hour: number]: {task: Task, duration: number}[]}>({})  // Track tasks with duration (in 30-min slots)
   const [activeMainTab, setActiveMainTab] = useState<'daily'>('daily')
   const [activeSubTab, setActiveSubTab] = useState<'todo' | 'schedule' | 'deepwork'>('todo')
   const [selectedTimePeriod, setSelectedTimePeriod] = useState<'All Time' | 'Today' | 'This Week' | 'This Month'>('All Time')
@@ -50,7 +59,7 @@ function App() {
   const [taskFormData, setTaskFormData] = useState<Partial<Task>>({})
   const [showDatePicker, setShowDatePicker] = useState(false)
   const [datePickerTask, setDatePickerTask] = useState<Task | null>(null)
-  const [selectedStatusFilter, setSelectedStatusFilter] = useState<'all' | 'active' | 'completed' | 'recurring' | 'overdue' | 'dueToday' | 'completedToday' | 'dueTomorrow'>('all')
+  const [selectedStatusFilter, setSelectedStatusFilter] = useState<'all' | 'active' | 'completed' | 'recurring' | 'overdue' | 'dueToday' | 'completedToday' | 'dueTomorrow'>('dueToday')
   const [dwSessionTask, setDwSessionTask] = useState<Task | null>(null)
   const [dwSessionTaskType, setDwSessionTaskType] = useState<string>('')
   const [dwSessionFocusArea, setDwSessionFocusArea] = useState<Area | ''>('')
@@ -60,6 +69,42 @@ function App() {
   const [timerPaused, setTimerPaused] = useState<boolean>(false)
   const [timerSeconds, setTimerSeconds] = useState<number>(0)
   const [sessionStartTime, setSessionStartTime] = useState<Date | null>(null)
+  const [pausedDuration, setPausedDuration] = useState<number>(0)
+  const [pauseStartTime, setPauseStartTime] = useState<Date | null>(null)
+
+  // Load persisted timer state and schedule on mount
+  useEffect(() => {
+    // Load Deep Work session
+    const storedSession = localStorage.getItem('deepWorkSession')
+    if (storedSession) {
+      const sessionData = JSON.parse(storedSession)
+      if (sessionData.isRunning) {
+        setTimerRunning(true)
+        setSessionStartTime(new Date(sessionData.startTime))
+        setDwSessionTask(sessionData.task)
+        setDwSessionTaskType(sessionData.taskType || '')
+        setDwSessionFocusArea(sessionData.focusArea)
+        setPausedDuration(sessionData.pausedDuration || 0)
+
+        if (sessionData.isPaused) {
+          setTimerPaused(true)
+          setPauseStartTime(sessionData.pauseStartTime ? new Date(sessionData.pauseStartTime) : null)
+        }
+      }
+    }
+
+    // Load daily schedule
+    const storedSchedule = localStorage.getItem('dailySchedule')
+    if (storedSchedule) {
+      const scheduleData = JSON.parse(storedSchedule)
+      const today = new Date().toISOString().split('T')[0]
+
+      // Only load if it's from today
+      if (scheduleData.date === today && scheduleData.tasks) {
+        setScheduledTasks(scheduleData.tasks)
+      }
+    }
+  }, [])
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session } }) => {
@@ -85,14 +130,38 @@ function App() {
   useEffect(() => {
     let interval: NodeJS.Timeout | null = null
     if (timerRunning && !timerPaused) {
+      // Calculate elapsed time based on actual timestamps
       interval = setInterval(() => {
-        setTimerSeconds(prev => prev + 1)
+        if (sessionStartTime) {
+          const now = new Date()
+          const elapsed = Math.floor((now.getTime() - sessionStartTime.getTime()) / 1000)
+          setTimerSeconds(elapsed - pausedDuration)
+        }
       }, 1000)
     }
     return () => {
       if (interval) clearInterval(interval)
     }
-  }, [timerRunning, timerPaused])
+  }, [timerRunning, timerPaused, sessionStartTime, pausedDuration])
+
+  // Save session state to localStorage whenever it changes
+  useEffect(() => {
+    if (timerRunning) {
+      const sessionData = {
+        isRunning: timerRunning,
+        isPaused: timerPaused,
+        startTime: sessionStartTime?.toISOString(),
+        pauseStartTime: pauseStartTime?.toISOString(),
+        pausedDuration,
+        task: dwSessionTask,
+        taskType: dwSessionTaskType,
+        focusArea: dwSessionFocusArea
+      }
+      localStorage.setItem('deepWorkSession', JSON.stringify(sessionData))
+    } else {
+      localStorage.removeItem('deepWorkSession')
+    }
+  }, [timerRunning, timerPaused, sessionStartTime, pauseStartTime, pausedDuration, dwSessionTask, dwSessionTaskType, dwSessionFocusArea])
 
   const fetchTasks = async (userId: string) => {
     try {
@@ -103,9 +172,39 @@ function App() {
         .order('created_at', { ascending: false })
 
       if (error) throw error
+
+      // For now, just set the tasks directly without transformation
+      // We'll handle checklist parsing when displaying
       setTasks(data || [])
+      console.log('Fetched tasks:', data?.length || 0, 'tasks')
     } catch (error) {
       console.error('Error fetching tasks:', error)
+    }
+  }
+
+  const toggleChecklistItem = async (taskId: string, checklistItemId: string) => {
+    try {
+      const task = tasks.find(t => t.id === taskId)
+      if (!task) return
+
+      const updatedChecklist = task.checklist.map(item =>
+        item.id === checklistItemId ? { ...item, completed: !item.completed } : item
+      )
+
+      const { error } = await supabase
+        .from('TG To Do List')
+        .update({
+          checklist: JSON.stringify(updatedChecklist)
+        })
+        .eq('id', taskId)
+
+      if (error) throw error
+
+      setTasks(prev => prev.map(t =>
+        t.id === taskId ? { ...t, checklist: updatedChecklist } : t
+      ))
+    } catch (error) {
+      console.error('Error toggling checklist item:', error)
     }
   }
 
@@ -209,22 +308,51 @@ function App() {
   }
 
   const startTimer = () => {
+    const now = new Date()
     setTimerRunning(true)
     setTimerPaused(false)
-    setSessionStartTime(new Date())
+    setSessionStartTime(now)
+    setPausedDuration(0)
+    setPauseStartTime(null)
   }
 
   const pauseTimer = () => {
-    setTimerPaused(!timerPaused)
+    if (timerPaused) {
+      // Resuming from pause
+      if (pauseStartTime) {
+        const pauseEnd = new Date()
+        const pauseDiff = Math.floor((pauseEnd.getTime() - pauseStartTime.getTime()) / 1000)
+        setPausedDuration(prev => prev + pauseDiff)
+      }
+      setPauseStartTime(null)
+      setTimerPaused(false)
+    } else {
+      // Pausing
+      setPauseStartTime(new Date())
+      setTimerPaused(true)
+    }
   }
 
   const saveSession = async () => {
+    // Calculate final elapsed time
+    let finalSeconds = timerSeconds
+    if (sessionStartTime) {
+      const now = new Date()
+      finalSeconds = Math.floor((now.getTime() - sessionStartTime.getTime()) / 1000) - pausedDuration
+
+      // If currently paused, add the current pause duration
+      if (timerPaused && pauseStartTime) {
+        const currentPauseDuration = Math.floor((now.getTime() - pauseStartTime.getTime()) / 1000)
+        finalSeconds -= currentPauseDuration
+      }
+    }
+
     console.log('🔵 saveSession called', {
       hasSession: !!session,
       sessionStartTime,
       dwSessionFocusArea,
-      timerSeconds,
-      durationMinutes: Math.floor(timerSeconds / 60)
+      finalSeconds,
+      durationMinutes: Math.floor(finalSeconds / 60)
     })
 
     if (session && sessionStartTime && dwSessionFocusArea) {
@@ -236,7 +364,7 @@ function App() {
           task_type: dwSessionTaskType || null,
           start_time: sessionStartTime.toISOString(),
           end_time: new Date().toISOString(),
-          duration_minutes: Math.floor(timerSeconds / 60)
+          duration_minutes: Math.floor(finalSeconds / 60)
         }
 
         console.log('🔵 Inserting session data:', sessionData)
@@ -272,10 +400,13 @@ function App() {
     setTimerPaused(false)
     setTimerSeconds(0)
     setSessionStartTime(null)
+    setPausedDuration(0)
+    setPauseStartTime(null)
     setDwSessionTask(null)
     setDwSessionTaskType('')
     setDwSessionFocusArea('')
     setDwTaskSearchTerm('')
+    localStorage.removeItem('deepWorkSession')
   }
 
   const cancelTimerSession = () => {
@@ -283,11 +414,92 @@ function App() {
     setTimerPaused(false)
     setTimerSeconds(0)
     setSessionStartTime(null)
+    setPausedDuration(0)
+    setPauseStartTime(null)
     setDwSessionTask(null)
     setDwSessionTaskType('')
     setDwSessionFocusArea('')
     setDwTaskSearchTerm('')
+    localStorage.removeItem('deepWorkSession')
   }
+
+  const saveScheduleLog = async () => {
+    if (!session || Object.keys(scheduledTasks).length === 0) return
+
+    try {
+      // Format scheduled tasks for storage
+      const scheduleData = Object.entries(scheduledTasks).map(([slotIndex, items]) => {
+        const slot = parseInt(slotIndex)
+        const totalMinutes = slot * 30
+        const hours = Math.floor(totalMinutes / 60)
+        const minutes = totalMinutes % 60
+        const displayHour = hours === 0 ? 12 : hours > 12 ? hours - 12 : hours
+        const ampm = hours < 12 ? 'AM' : 'PM'
+        const timeLabel = `${displayHour}:${minutes.toString().padStart(2, '0')} ${ampm}`
+
+        return items.map(item => ({
+          time_slot: timeLabel,
+          slot_index: slot,
+          task_id: item.task.id,
+          task_name: item.task.task_name,
+          duration_slots: item.duration,
+          area: item.task.area
+        }))
+      }).flat()
+
+      const { data, error } = await supabase
+        .from('schedule_log')
+        .insert({
+          user_id: session.user.id,
+          date: new Date().toISOString().split('T')[0],
+          schedule_data: scheduleData,
+          created_at: new Date().toISOString()
+        })
+        .select()
+
+      if (error) throw error
+
+      console.log('✅ Schedule saved to log:', data)
+      // Optional: Show success message to user
+      alert('Schedule saved successfully!')
+
+    } catch (error) {
+      console.error('Error saving schedule:', error)
+      alert('Failed to save schedule. Please try again.')
+    }
+  }
+
+  // Auto-save schedule at end of day (11:59 PM)
+  useEffect(() => {
+    const checkEndOfDay = () => {
+      const now = new Date()
+      const hours = now.getHours()
+      const minutes = now.getMinutes()
+
+      // Check if it's 11:59 PM
+      if (hours === 23 && minutes === 59) {
+        saveScheduleLog()
+      }
+    }
+
+    // Check every minute
+    const interval = setInterval(checkEndOfDay, 60000)
+
+    // Also save to localStorage periodically for recovery
+    const saveInterval = setInterval(() => {
+      if (Object.keys(scheduledTasks).length > 0) {
+        localStorage.setItem('dailySchedule', JSON.stringify({
+          date: new Date().toISOString().split('T')[0],
+          tasks: scheduledTasks
+        }))
+      }
+    }, 30000) // Every 30 seconds
+
+    return () => {
+      clearInterval(interval)
+      clearInterval(saveInterval)
+    }
+  }, [scheduledTasks, session])
 
   const formatTime = (seconds: number) => {
     const mins = Math.floor(seconds / 60)
@@ -301,6 +513,7 @@ function App() {
       area: sessionData.area,
       task_type: sessionData.task_type,
       task_id: sessionData.task_id,
+      task_name: sessionData.task?.task_name || '',  // Store the task name
       effort_level: sessionData.effort_level,
       notes: sessionData.notes,
       duration_minutes: sessionData.duration_minutes,
@@ -554,49 +767,6 @@ function App() {
       taskType: data.taskType,
       percent: dwStats.totalMinutes > 0 ? Math.round((data.minutes / dwStats.totalMinutes) * 100) : 0
     }))
-
-  // Hours summary by area
-  const getHoursByPeriod = (area: Area | 'All', period: 'today' | 'week' | 'month' | 'all') => {
-    const now = new Date()
-    let start: Date
-
-    if (period === 'today') {
-      start = new Date(now.getFullYear(), now.getMonth(), now.getDate())
-    } else if (period === 'week') {
-      start = new Date(now)
-      start.setDate(now.getDate() - now.getDay())
-      start.setHours(0, 0, 0, 0)
-    } else if (period === 'month') {
-      start = new Date(now.getFullYear(), now.getMonth(), 1)
-    } else {
-      start = new Date(0)
-    }
-
-    const sessions = filteredDWSessions.filter(s => {
-      if (area !== 'All' && s.area !== area) return false
-      return new Date(s.start_time) >= start
-    })
-
-    const totalMinutes = sessions.reduce((sum, s) => sum + (s.duration_minutes || 0), 0)
-    return (totalMinutes / 60).toFixed(2) + 'h'
-  }
-
-  const hoursSummary = [
-    { area: 'S4', color: '#3b82f6' },
-    { area: 'Full Stack', color: '#10b981' },
-    { area: 'Personal', color: '#ec4899' },
-    { area: 'Huge Capital', color: '#a855f7' },
-    { area: '808', color: '#eab308' },
-    { area: 'Golf', color: '#f97316' },
-    { area: 'Health', color: '#14b8a6' },
-  ].map(({ area, color }) => ({
-    area,
-    color,
-    today: getHoursByPeriod(area as Area, 'today'),
-    week: getHoursByPeriod(area as Area, 'week'),
-    month: getHoursByPeriod(area as Area, 'month'),
-    allTime: getHoursByPeriod(area as Area, 'all')
-  }))
 
   if (loading && !session) {
     return (
@@ -1104,13 +1274,21 @@ function App() {
                 }).map((task) => (
                   <div
                     key={task.id}
+                    draggable
+                    onDragStart={(e) => {
+                      e.dataTransfer.setData('task', JSON.stringify(task))
+                      e.currentTarget.style.opacity = '0.5'
+                    }}
+                    onDragEnd={(e) => {
+                      e.currentTarget.style.opacity = '1'
+                    }}
                     onDoubleClick={() => setEditingTask(task)}
                     style={{
                       background: `${getAreaColor(task.area as Area)}66`,
                       padding: '20px',
                       borderRadius: '12px',
                       border: `2px solid ${isOverdue(task.due_date) ? '#dc2626' : isToday(task.due_date) ? '#eab308' : isTomorrow(task.due_date) ? '#f97316' : '#6b7280'}`,
-                      cursor: 'pointer',
+                      cursor: 'grab',
                       display: 'flex',
                       gap: '20px'
                     }}
@@ -1134,8 +1312,8 @@ function App() {
                           borderRadius: '8px',
                           padding: '10px 14px',
                           backgroundColor: '#4a4a4a',
-                          border: `1px solid ${task.status === 'Done' ? '#10b981' : isOverdue(task.due_date) ? '#dc2626' : isToday(task.due_date) ? '#eab308' : 'white'}`,
-                          color: task.status === 'Done' ? '#10b981' : isOverdue(task.due_date) ? '#dc2626' : isToday(task.due_date) ? '#eab308' : 'white',
+                          border: `1px solid ${task.status === 'Done' ? '#10b981' : isOverdue(task.due_date) ? '#dc2626' : isToday(task.due_date) ? '#eab308' : isTomorrow(task.due_date) ? '#f97316' : 'white'}`,
+                          color: task.status === 'Done' ? '#10b981' : isOverdue(task.due_date) ? '#dc2626' : isToday(task.due_date) ? '#eab308' : isTomorrow(task.due_date) ? '#f97316' : 'white',
                           fontSize: '12px',
                           fontWeight: 'bold',
                           textAlign: 'center',
@@ -1144,7 +1322,7 @@ function App() {
                         }}
                       >
                         <div style={{ fontSize: '10px', marginBottom: '2px', opacity: 0.9 }}>
-                          {task.status === 'Done' ? 'COMPLETED' : isOverdue(task.due_date) ? 'OVERDUE' : isToday(task.due_date) ? 'DUE TODAY' : isTomorrow(task.due_date) ? 'DUE' : 'UPCOMING'}
+                          {task.status === 'Done' ? 'COMPLETED' : isOverdue(task.due_date) ? 'OVERDUE' : isToday(task.due_date) ? 'DUE' : isTomorrow(task.due_date) ? 'DUE' : 'UPCOMING'}
                         </div>
                         <div style={{ fontSize: '16px', fontWeight: 'bold' }}>
                           {task.status === 'Done' && task.completed_at
@@ -1153,11 +1331,17 @@ function App() {
                                 const date = new Date(parseInt(parts[0]), parseInt(parts[1]) - 1, parseInt(parts[2]))
                                 return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
                               })()
-                            : task.due_date ? (isTomorrow(task.due_date) ? 'Tomorrow' : isToday(task.due_date) ? 'Today' : (() => {
-                                const parts = task.due_date.split('T')[0].split('-')
-                                const date = new Date(parseInt(parts[0]), parseInt(parts[1]) - 1, parseInt(parts[2]))
-                                return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
-                              })()) : 'No Date'}
+                            : task.due_date ? (() => {
+                                if (isToday(task.due_date)) {
+                                  return 'Today'
+                                } else if (isTomorrow(task.due_date)) {
+                                  return 'Tomorrow'
+                                } else {
+                                  const parts = task.due_date.split('T')[0].split('-')
+                                  const date = new Date(parseInt(parts[0]), parseInt(parts[1]) - 1, parseInt(parts[2]))
+                                  return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
+                                }
+                              })() : 'No Date'}
                         </div>
                       </div>
 
@@ -1182,8 +1366,10 @@ function App() {
                       </div>
                     </div>
 
-                    {/* Task Content */}
-                    <div style={{ flex: 1 }}>
+                    {/* Three Column Content Area */}
+                    <div style={{ flex: 1, display: 'flex', gap: '15px' }}>
+                      {/* Column 1: Main Task Content */}
+                      <div style={{ minWidth: '320px' }}>
                       <h3 style={{
                         fontSize: '18px',
                         fontWeight: 'bold',
@@ -1218,18 +1404,6 @@ function App() {
                             {task.task_type}
                           </span>
                         )}
-                        {task.priority && (
-                          <span style={{
-                            backgroundColor: task.priority === 'High' ? '#dc2626' : task.priority === 'Medium' ? '#f59e0b' : '#10b981',
-                            color: 'white',
-                            padding: '4px 12px',
-                            borderRadius: '12px',
-                            fontSize: '12px',
-                            fontWeight: '500'
-                          }}>
-                            ⏰ {task.due_date ? new Date(task.due_date).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true }).toUpperCase() : ''}
-                          </span>
-                        )}
                         <span style={{
                           backgroundColor: '#16a34a',
                           color: 'white',
@@ -1238,7 +1412,7 @@ function App() {
                           fontSize: '12px',
                           fontWeight: '500'
                         }}>
-                          {task.effort_level || 'Money Maker: $$$ MoneyMaker'}
+                          {task.effort_level || '$ Lil Money'}
                         </span>
                       </div>
 
@@ -1252,6 +1426,21 @@ function App() {
                         <div>Hours Projected: {task.hours_projected || 1}</div>
                         <div>Hours Worked: {task.hours_worked || 0}</div>
                       </div>
+
+                      {/* Created Date and Time */}
+                      <div style={{
+                        marginTop: '8px',
+                        fontSize: '12px',
+                        color: '#9ca3af',
+                        fontWeight: '500',
+                        display: 'flex',
+                        gap: '15px'
+                      }}>
+                        {task.created_at && (
+                          <span>Created: {new Date(task.created_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}</span>
+                        )}
+                      </div>
+
 
                       {/* Status */}
                       <div style={{
@@ -1281,6 +1470,226 @@ function App() {
                           Click to add description...
                         </div>
                       )}
+                    </div>
+
+                    {/* Column 2: Checklist */}
+                    <div style={{
+                      flex: 1,
+                      minWidth: '180px',
+                      paddingRight: '15px'
+                    }}>
+                      <div style={{
+                        fontSize: '14px',
+                        fontWeight: 'bold',
+                        color: '#e5e7eb',
+                        marginBottom: '10px'
+                      }}>
+                        Checklist
+                      </div>
+                      {(() => {
+                        let checklistItems = []
+                        try {
+                          if (task.checklist) {
+                            checklistItems = typeof task.checklist === 'string'
+                              ? JSON.parse(task.checklist)
+                              : task.checklist
+                          }
+                        } catch (e) {
+                          // Silently fail if checklist can't be parsed
+                        }
+
+                        // Show at least one item (existing or placeholder)
+                        if (!checklistItems || checklistItems.length === 0) {
+                          checklistItems = [{
+                            id: 'placeholder-1',
+                            text: 'Add checklist item',
+                            completed: false
+                          }]
+                        }
+
+                        return (
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                            {checklistItems.slice(0, 3).map((item: any) => (
+                              <div key={item.id} style={{
+                                display: 'flex',
+                                alignItems: 'center',
+                                gap: '8px'
+                              }}>
+                                <button
+                                  onClick={(e) => {
+                                    e.stopPropagation()
+                                    if (item.id !== 'placeholder-1') {
+                                      toggleChecklistItem(task.id, item.id)
+                                    }
+                                  }}
+                                  style={{
+                                    width: '16px',
+                                    height: '16px',
+                                    borderRadius: '50%',
+                                    border: '2px solid white',
+                                    backgroundColor: item.completed ? '#3b82f6' : 'transparent',
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    justifyContent: 'center',
+                                    cursor: 'pointer',
+                                    flexShrink: 0
+                                  }}
+                                >
+                                  {item.completed && (
+                                    <div style={{
+                                      width: '8px',
+                                      height: '8px',
+                                      borderRadius: '50%',
+                                      backgroundColor: 'white'
+                                    }}></div>
+                                  )}
+                                </button>
+                                <input
+                                  type="text"
+                                  defaultValue={item.text}
+                                  placeholder={item.id === 'placeholder-1' ? 'Add checklist item' : 'Enter item...'}
+                                  onClick={(e) => e.stopPropagation()}
+                                  onKeyDown={(e) => {
+                                    // Delete item on backspace if empty
+                                    if (e.key === 'Backspace' && e.currentTarget.value === '' && item.id !== 'placeholder-1') {
+                                      const updatedChecklist = checklistItems.filter((ci: any) => ci.id !== item.id)
+                                      supabase
+                                        .from('TG To Do List')
+                                        .update({ checklist: JSON.stringify(updatedChecklist) })
+                                        .eq('id', task.id)
+                                        .then(() => {
+                                          setTasks(prev => prev.map(t =>
+                                            t.id === task.id ? { ...t, checklist: updatedChecklist } : t
+                                          ))
+                                        })
+                                    }
+                                  }}
+                                  onBlur={(e) => {
+                                    // Update the checklist item text on blur
+                                    if (e.target.value && e.target.value !== item.text) {
+                                      const updatedChecklist = checklistItems.map((ci: any) =>
+                                        ci.id === item.id ? { ...ci, text: e.target.value } : ci
+                                      )
+                                      // Save to database
+                                      supabase
+                                        .from('TG To Do List')
+                                        .update({ checklist: JSON.stringify(updatedChecklist) })
+                                        .eq('id', task.id)
+                                        .then(() => {
+                                          // Update local state
+                                          setTasks(prev => prev.map(t =>
+                                            t.id === task.id ? { ...t, checklist: updatedChecklist } : t
+                                          ))
+                                        })
+                                    }
+                                  }}
+                                  style={{
+                                    backgroundColor: 'transparent',
+                                    border: 'none',
+                                    borderBottom: '1px solid transparent',
+                                    color: 'white',
+                                    fontSize: '13px',
+                                    outline: 'none',
+                                    width: '100%',
+                                    textDecoration: item.completed ? 'line-through' : 'none',
+                                    opacity: item.completed ? 0.6 : 1,
+                                    fontStyle: item.id === 'placeholder-1' ? 'italic' : 'normal',
+                                    cursor: 'text',
+                                    padding: '2px 0'
+                                  }}
+                                  onFocus={(e) => {
+                                    e.currentTarget.style.borderBottom = '1px solid white'
+                                  }}
+                                />
+                              </div>
+                            ))}
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation()
+                                // Add new checklist item
+                                const newItem = {
+                                  id: `checklist-${Date.now()}`,
+                                  text: '',
+                                  completed: false
+                                }
+                                const updatedChecklist = [...checklistItems.filter((item: any) => item.id !== 'placeholder-1'), newItem]
+                                supabase
+                                  .from('TG To Do List')
+                                  .update({ checklist: JSON.stringify(updatedChecklist) })
+                                  .eq('id', task.id)
+                                  .then(() => {
+                                    setTasks(prev => prev.map(t =>
+                                      t.id === task.id ? { ...t, checklist: updatedChecklist } : t
+                                    ))
+                                  })
+                              }}
+                              style={{
+                                display: 'flex',
+                                alignItems: 'center',
+                                gap: '6px',
+                                padding: '4px 8px',
+                                backgroundColor: 'transparent',
+                                border: 'none',
+                                borderRadius: '4px',
+                                color: 'white',
+                                fontSize: '12px',
+                                cursor: 'pointer',
+                                transition: 'all 0.2s',
+                                marginTop: '4px'
+                              }}
+                              onMouseEnter={(e) => {
+                                e.currentTarget.style.opacity = '0.8'
+                              }}
+                              onMouseLeave={(e) => {
+                                e.currentTarget.style.opacity = '1'
+                              }}
+                            >
+                              <span style={{ fontSize: '14px' }}>+</span>
+                              Add new item
+                            </button>
+                          </div>
+                        )
+                      })()}
+                    </div>
+
+                    {/* Column 3: Think Thru Notes */}
+                    <div style={{
+                      width: '320px',
+                      paddingLeft: '15px',
+                      borderLeft: '1px solid #374151'
+                    }}>
+                      <div style={{
+                        fontSize: '14px',
+                        fontWeight: 'bold',
+                        color: '#e5e7eb',
+                        marginBottom: '10px'
+                      }}>
+                        Think Thru
+                      </div>
+                      <textarea
+                        onClick={(e) => e.stopPropagation()}
+                        onChange={(e) => {
+                          e.stopPropagation()
+                          // Here we would update the notes in the database
+                          // For now it's just a placeholder
+                        }}
+                        placeholder="Add notes..."
+                        style={{
+                          width: '100%',
+                          height: 'calc(100% - 30px)',
+                          minHeight: '100px',
+                          padding: '8px',
+                          backgroundColor: '#374151',
+                          border: '1px solid #4b5563',
+                          borderRadius: '6px',
+                          color: 'white',
+                          fontSize: '12px',
+                          resize: 'none',
+                          outline: 'none'
+                        }}
+                        defaultValue={task.description || ''}
+                      />
+                    </div>
                     </div>
                   </div>
                 ))}
@@ -1520,11 +1929,255 @@ function App() {
               <div style={{
                 backgroundColor: '#2a2a2a',
                 padding: '20px',
-                borderRadius: '12px'
+                borderRadius: '12px',
+                height: '700px',
+                display: 'flex',
+                flexDirection: 'column'
               }}>
-                <h3 style={{ marginBottom: '16px', fontSize: '18px', color: '#eab308' }}>Today's Schedule</h3>
-                <div style={{ color: '#6b7280', fontSize: '14px', textAlign: 'center', padding: '40px 0' }}>
-                  No scheduled tasks for today
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
+                  <h3 style={{ fontSize: '18px', color: '#eab308', flex: 1, textAlign: 'center', margin: 0 }}>Today's Schedule</h3>
+                  {Object.keys(scheduledTasks).length > 0 && (
+                    <button
+                      onClick={saveScheduleLog}
+                      style={{
+                        padding: '8px 16px',
+                        backgroundColor: '#10b981',
+                        color: 'white',
+                        border: 'none',
+                        borderRadius: '6px',
+                        cursor: 'pointer',
+                        fontSize: '14px',
+                        fontWeight: '500'
+                      }}
+                    >
+                      💾 Save
+                    </button>
+                  )}
+                </div>
+                <div style={{
+                  flex: 1,
+                  overflowY: 'auto',
+                  overflowX: 'hidden',
+                  border: '1px solid #444',
+                  borderRadius: '8px',
+                  backgroundColor: '#1a1a1a'
+                }}>
+                  {/* Time slots in 30-minute increments */}
+                  {Array.from({ length: 48 }, (_, i) => {
+                    const totalMinutes = i * 30
+                    const hours = Math.floor(totalMinutes / 60)
+                    const minutes = totalMinutes % 60
+                    const displayHour = hours === 0 ? 12 : hours > 12 ? hours - 12 : hours
+                    const ampm = hours < 12 ? 'AM' : 'PM'
+                    const timeLabel = `${displayHour}:${minutes.toString().padStart(2, '0')} ${ampm}`
+
+                    return (
+                      <div
+                        key={i}
+                        style={{
+                          display: 'flex',
+                          borderBottom: '1px solid #333',
+                          minHeight: '32px',
+                          position: 'relative'
+                        }}
+                        onDragOver={(e) => {
+                          e.preventDefault()
+                          e.currentTarget.style.backgroundColor = '#374151'
+                        }}
+                        onDragLeave={(e) => {
+                          e.currentTarget.style.backgroundColor = 'transparent'
+                        }}
+                        onDrop={(e) => {
+                          e.preventDefault()
+                          e.currentTarget.style.backgroundColor = 'transparent'
+                          const taskData = e.dataTransfer.getData('task')
+                          const fromHour = e.dataTransfer.getData('fromHour')
+                          const fromIndex = e.dataTransfer.getData('fromIndex')
+
+                          if (taskData) {
+                            const task = JSON.parse(taskData)
+
+                            // If moving from another time slot, remove it from there first
+                            if (fromHour !== '' && fromIndex !== '') {
+                              const hour = parseInt(fromHour)
+                              const index = parseInt(fromIndex)
+                              const existingDuration = e.dataTransfer.getData('duration') || '2'
+                              setScheduledTasks(prev => {
+                                const newScheduled = { ...prev }
+                                if (newScheduled[hour]) {
+                                  newScheduled[hour] = newScheduled[hour].filter((_, idx) => idx !== index)
+                                }
+                                // Add to new time slot with duration
+                                newScheduled[i] = [...(newScheduled[i] || []), { task, duration: parseInt(existingDuration) }]
+                                return newScheduled
+                              })
+                            } else {
+                              // Just adding new task from todo list with default 1 hour (2 slots) duration
+                              setScheduledTasks(prev => ({
+                                ...prev,
+                                [i]: [...(prev[i] || []), { task, duration: 2 }]
+                              }))
+                            }
+                          }
+                        }}
+                      >
+                        <div style={{
+                          width: '65px',
+                          padding: '6px',
+                          borderRight: '1px solid #333',
+                          fontSize: '10px',
+                          color: '#9ca3af',
+                          fontWeight: '500'
+                        }}>
+                          {timeLabel}
+                        </div>
+                        <div style={{
+                          flex: 1,
+                          padding: '4px 8px',
+                          position: 'relative',
+                          display: 'flex',
+                          flexDirection: 'column',
+                          gap: '4px'
+                        }}>
+                          {/* Display scheduled tasks for this hour */}
+                          {scheduledTasks[i]?.map((item, index) => {
+                            const { task, duration } = item
+                            // Calculate height based on duration (each slot is 32px)
+                            const taskHeight = duration * 32 - 8 // Subtract padding
+
+                            return (
+                              <div
+                                key={`${task.id}-${index}`}
+                                style={{
+                                  position: 'absolute',
+                                  top: '4px',
+                                  left: '4px',
+                                  right: '4px',
+                                  height: `${taskHeight}px`,
+                                  backgroundColor: `${getAreaColor(task.area as Area)}99`,
+                                  borderRadius: '4px',
+                                  border: `1px solid ${getAreaColor(task.area as Area)}`,
+                                  display: 'flex',
+                                  flexDirection: 'column',
+                                  overflow: 'hidden',
+                                  zIndex: 10
+                                }}
+                              >
+                                {/* Top resize/drag handle */}
+                                <div
+                                  style={{
+                                    height: '8px',
+                                    backgroundColor: `${getAreaColor(task.area as Area)}`,
+                                    cursor: 'move',
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    justifyContent: 'center'
+                                  }}
+                                  draggable
+                                  onDragStart={(e) => {
+                                    e.dataTransfer.setData('task', JSON.stringify(task))
+                                    e.dataTransfer.setData('fromHour', i.toString())
+                                    e.dataTransfer.setData('fromIndex', index.toString())
+                                    e.dataTransfer.setData('duration', duration.toString())
+                                  }}
+                                >
+                                  <div style={{
+                                    width: '30px',
+                                    height: '2px',
+                                    backgroundColor: 'rgba(255, 255, 255, 0.5)',
+                                    borderRadius: '1px'
+                                  }} />
+                                </div>
+
+                                {/* Main task content */}
+                                <div
+                                  style={{
+                                    flex: 1,
+                                    padding: '4px 8px',
+                                    color: 'white',
+                                    fontSize: '11px',
+                                    display: 'flex',
+                                    alignItems: 'flex-start',
+                                    justifyContent: 'space-between',
+                                    minHeight: 0
+                                  }}
+                                >
+                                  <span style={{ fontWeight: '500', wordBreak: 'break-word' }}>
+                                    {task.task_name}
+                                  </span>
+                                  <button
+                                    onClick={() => {
+                                      // Remove task from this time slot
+                                      setScheduledTasks(prev => ({
+                                        ...prev,
+                                        [i]: prev[i].filter((_, idx) => idx !== index)
+                                      }))
+                                    }}
+                                    style={{
+                                      backgroundColor: 'transparent',
+                                      border: 'none',
+                                      color: '#ef4444',
+                                      cursor: 'pointer',
+                                      fontSize: '14px',
+                                      padding: '0 2px',
+                                      minWidth: '16px'
+                                    }}
+                                  >
+                                    ×
+                                  </button>
+                                </div>
+
+                                {/* Bottom resize handle */}
+                                <div
+                                  style={{
+                                    height: '8px',
+                                    backgroundColor: `${getAreaColor(task.area as Area)}`,
+                                    cursor: 'ns-resize',
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    justifyContent: 'center'
+                                  }}
+                                  onMouseDown={(e) => {
+                                    e.preventDefault()
+                                    const startY = e.clientY
+                                    const startDuration = duration
+
+                                    const handleMouseMove = (moveEvent: MouseEvent) => {
+                                      const deltaY = moveEvent.clientY - startY
+                                      const slotChange = Math.round(deltaY / 32)
+                                      const newDuration = Math.max(1, Math.min(8, startDuration + slotChange))
+
+                                      setScheduledTasks(prev => ({
+                                        ...prev,
+                                        [i]: prev[i].map((t, idx) =>
+                                          idx === index ? { ...t, duration: newDuration } : t
+                                        )
+                                      }))
+                                    }
+
+                                    const handleMouseUp = () => {
+                                      document.removeEventListener('mousemove', handleMouseMove)
+                                      document.removeEventListener('mouseup', handleMouseUp)
+                                    }
+
+                                    document.addEventListener('mousemove', handleMouseMove)
+                                    document.addEventListener('mouseup', handleMouseUp)
+                                  }}
+                                >
+                                  <div style={{
+                                    width: '30px',
+                                    height: '2px',
+                                    backgroundColor: 'rgba(255, 255, 255, 0.5)',
+                                    borderRadius: '1px'
+                                  }} />
+                                </div>
+                              </div>
+                            )
+                          })}
+                        </div>
+                      </div>
+                    )
+                  })}
                 </div>
               </div>
             </div>
@@ -1532,14 +2185,285 @@ function App() {
         )}
 
         {activeSubTab === 'schedule' && (
-          <div style={{ textAlign: 'center', padding: '80px', color: '#6b7280' }}>
-            <h2 style={{ fontSize: '32px', marginBottom: '16px' }}>📅 Schedule View</h2>
-            <p>Drag and drop scheduling coming soon!</p>
+          <div>
+            {/* Header */}
+            <div style={{ marginBottom: '24px' }}>
+              <h2 style={{ fontSize: '28px', fontWeight: 'bold', marginBottom: '4px' }}>📅 Daily Schedule</h2>
+              <p style={{ color: '#6b7280', fontSize: '14px' }}>Plan your day and track your schedule history</p>
+            </div>
+
+            {/* Today's Schedule Section */}
+            <div style={{ marginBottom: '32px' }}>
+              <div style={{
+                backgroundColor: '#2a2a2a',
+                padding: '24px',
+                borderRadius: '12px',
+                height: '700px',
+                display: 'flex',
+                flexDirection: 'column'
+              }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
+                  <h3 style={{ fontSize: '20px', fontWeight: 'bold', color: '#eab308', margin: 0 }}>Today's Schedule</h3>
+                  {Object.keys(scheduledTasks).length > 0 && (
+                    <button
+                      onClick={saveScheduleLog}
+                      style={{
+                        padding: '10px 20px',
+                        backgroundColor: '#10b981',
+                        color: 'white',
+                        border: 'none',
+                        borderRadius: '8px',
+                        cursor: 'pointer',
+                        fontSize: '14px',
+                        fontWeight: '600'
+                      }}
+                    >
+                      💾 Save Schedule
+                    </button>
+                  )}
+                </div>
+                <div style={{
+                  flex: 1,
+                  overflowY: 'auto',
+                  overflowX: 'hidden',
+                  border: '1px solid #444',
+                  borderRadius: '8px',
+                  backgroundColor: '#1a1a1a'
+                }}>
+                  {/* Time slots in 30-minute increments */}
+                  {Array.from({ length: 48 }, (_, i) => {
+                    const totalMinutes = i * 30
+                    const hours = Math.floor(totalMinutes / 60)
+                    const minutes = totalMinutes % 60
+                    const displayHour = hours === 0 ? 12 : hours > 12 ? hours - 12 : hours
+                    const ampm = hours < 12 ? 'AM' : 'PM'
+                    const timeLabel = `${displayHour}:${minutes.toString().padStart(2, '0')} ${ampm}`
+
+                    return (
+                      <div
+                        key={i}
+                        style={{
+                          display: 'flex',
+                          borderBottom: '1px solid #333',
+                          minHeight: '32px',
+                          position: 'relative'
+                        }}
+                        onDragOver={(e) => {
+                          e.preventDefault()
+                          e.currentTarget.style.backgroundColor = '#374151'
+                        }}
+                        onDragLeave={(e) => {
+                          e.currentTarget.style.backgroundColor = 'transparent'
+                        }}
+                        onDrop={(e) => {
+                          e.preventDefault()
+                          e.currentTarget.style.backgroundColor = 'transparent'
+                          const taskData = e.dataTransfer.getData('task')
+                          const fromHour = e.dataTransfer.getData('fromHour')
+                          const fromIndex = e.dataTransfer.getData('fromIndex')
+
+                          if (taskData) {
+                            const task = JSON.parse(taskData)
+
+                            // If moving from another time slot, remove it from there first
+                            if (fromHour !== '' && fromIndex !== '') {
+                              const hour = parseInt(fromHour)
+                              const index = parseInt(fromIndex)
+                              const existingDuration = e.dataTransfer.getData('duration') || '2'
+                              setScheduledTasks(prev => {
+                                const newScheduled = { ...prev }
+                                if (newScheduled[hour]) {
+                                  newScheduled[hour] = newScheduled[hour].filter((_, idx) => idx !== index)
+                                }
+                                // Add to new time slot with duration
+                                newScheduled[i] = [...(newScheduled[i] || []), { task, duration: parseInt(existingDuration) }]
+                                return newScheduled
+                              })
+                            } else {
+                              // Just adding new task from todo list with default 1 hour (2 slots) duration
+                              setScheduledTasks(prev => ({
+                                ...prev,
+                                [i]: [...(prev[i] || []), { task, duration: 2 }]
+                              }))
+                            }
+                          }
+                        }}
+                      >
+                        <div style={{
+                          width: '65px',
+                          padding: '6px',
+                          borderRight: '1px solid #333',
+                          fontSize: '10px',
+                          color: '#9ca3af',
+                          fontWeight: '500'
+                        }}>
+                          {timeLabel}
+                        </div>
+                        <div style={{
+                          flex: 1,
+                          padding: '4px 8px',
+                          position: 'relative',
+                          display: 'flex',
+                          flexDirection: 'column',
+                          gap: '4px'
+                        }}>
+                          {/* Display scheduled tasks for this hour */}
+                          {scheduledTasks[i]?.map((item, index) => {
+                            const { task, duration } = item
+                            // Calculate height based on duration (each slot is 32px)
+                            const taskHeight = duration * 32 - 8 // Subtract padding
+
+                            return (
+                              <div
+                                key={`${task.id}-${index}`}
+                                style={{
+                                  position: 'absolute',
+                                  top: '4px',
+                                  left: '4px',
+                                  right: '4px',
+                                  height: `${taskHeight}px`,
+                                  backgroundColor: `${getAreaColor(task.area as Area)}99`,
+                                  borderRadius: '4px',
+                                  border: `1px solid ${getAreaColor(task.area as Area)}`,
+                                  display: 'flex',
+                                  flexDirection: 'column',
+                                  overflow: 'hidden',
+                                  zIndex: 10
+                                }}
+                              >
+                                {/* Top resize/drag handle */}
+                                <div
+                                  style={{
+                                    height: '8px',
+                                    backgroundColor: `${getAreaColor(task.area as Area)}`,
+                                    cursor: 'move',
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    justifyContent: 'center'
+                                  }}
+                                  draggable
+                                  onDragStart={(e) => {
+                                    e.dataTransfer.setData('task', JSON.stringify(task))
+                                    e.dataTransfer.setData('fromHour', i.toString())
+                                    e.dataTransfer.setData('fromIndex', index.toString())
+                                    e.dataTransfer.setData('duration', duration.toString())
+                                  }}
+                                >
+                                  <div style={{
+                                    width: '30px',
+                                    height: '2px',
+                                    backgroundColor: 'rgba(255, 255, 255, 0.5)',
+                                    borderRadius: '1px'
+                                  }} />
+                                </div>
+
+                                {/* Main task content */}
+                                <div
+                                  style={{
+                                    flex: 1,
+                                    padding: '4px 8px',
+                                    color: 'white',
+                                    fontSize: '11px',
+                                    display: 'flex',
+                                    alignItems: 'flex-start',
+                                    justifyContent: 'space-between',
+                                    minHeight: 0
+                                  }}
+                                >
+                                  <span style={{ fontWeight: '500', wordBreak: 'break-word' }}>
+                                    {task.task_name}
+                                  </span>
+                                  <button
+                                    onClick={() => {
+                                      // Remove task from this time slot
+                                      setScheduledTasks(prev => ({
+                                        ...prev,
+                                        [i]: prev[i].filter((_, idx) => idx !== index)
+                                      }))
+                                    }}
+                                    style={{
+                                      backgroundColor: 'transparent',
+                                      border: 'none',
+                                      color: '#ef4444',
+                                      cursor: 'pointer',
+                                      fontSize: '14px',
+                                      padding: '0 2px',
+                                      minWidth: '16px'
+                                    }}
+                                  >
+                                    ×
+                                  </button>
+                                </div>
+
+                                {/* Bottom resize handle */}
+                                <div
+                                  style={{
+                                    height: '8px',
+                                    backgroundColor: `${getAreaColor(task.area as Area)}`,
+                                    cursor: 'ns-resize',
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    justifyContent: 'center'
+                                  }}
+                                  onMouseDown={(e) => {
+                                    e.preventDefault()
+                                    const startY = e.clientY
+                                    const startDuration = duration
+
+                                    const handleMouseMove = (moveEvent: MouseEvent) => {
+                                      const deltaY = moveEvent.clientY - startY
+                                      const slotChange = Math.round(deltaY / 32)
+                                      const newDuration = Math.max(1, Math.min(8, startDuration + slotChange))
+
+                                      setScheduledTasks(prev => ({
+                                        ...prev,
+                                        [i]: prev[i].map((t, idx) =>
+                                          idx === index ? { ...t, duration: newDuration } : t
+                                        )
+                                      }))
+                                    }
+
+                                    const handleMouseUp = () => {
+                                      document.removeEventListener('mousemove', handleMouseMove)
+                                      document.removeEventListener('mouseup', handleMouseUp)
+                                    }
+
+                                    document.addEventListener('mousemove', handleMouseMove)
+                                    document.addEventListener('mouseup', handleMouseUp)
+                                  }}
+                                >
+                                  <div style={{
+                                    width: '30px',
+                                    height: '2px',
+                                    backgroundColor: 'rgba(255, 255, 255, 0.5)',
+                                    borderRadius: '1px'
+                                  }} />
+                                </div>
+                              </div>
+                            )
+                          })}
+                        </div>
+                      </div>
+                    )
+                  })}
+                </div>
+              </div>
+            </div>
+
+            {/* Schedule Log History */}
+            <div>
+              <h3 style={{ fontSize: '20px', fontWeight: 'bold', marginBottom: '16px', color: '#e5e7eb' }}>Schedule History</h3>
+              <div style={{ backgroundColor: '#2a2a2a', padding: '24px', borderRadius: '12px' }}>
+                <p style={{ color: '#9ca3af', textAlign: 'center', padding: '40px 0' }}>
+                  Past schedules will appear here. Save today's schedule to start building your history!
+                </p>
+              </div>
+            </div>
           </div>
         )}
 
         {activeSubTab === 'deepwork' && (
-          <div>
+          <>
             {/* Header */}
             <div style={{ marginBottom: '24px' }}>
               <h2 style={{ fontSize: '28px', fontWeight: 'bold', marginBottom: '4px' }}>Deep Work Sessions</h2>
@@ -1716,426 +2640,138 @@ function App() {
               )}
             </div>
 
-            {/* Chart and Summary Section */}
-            <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr', gap: '24px', marginBottom: '24px' }}>
-              {/* Chart */}
-              <div style={{ backgroundColor: '#2a2a2a', padding: '24px', borderRadius: '12px' }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '16px' }}>
-                  <h3 style={{ fontSize: '18px', fontWeight: 'bold' }}>Deep Work Hours by {chartView === 'areas' ? 'Task Areas' : 'Money Maker Level'}</h3>
-                  <div style={{ display: 'flex', gap: '8px' }}>
-                    <button
-                      onClick={() => setChartView('areas')}
+            {/* Deep Work Hours Summary Table */}
+            <div style={{
+                backgroundColor: '#2a2a2a',
+                padding: '24px',
+                borderRadius: '12px',
+                marginBottom: '24px'
+              }}>
+                <h3 style={{ fontSize: '20px', fontWeight: 'bold', marginBottom: '20px' }}>Deep Work Hours Summary</h3>
+
+                {/* Filter Controls */}
+                <div style={{ display: 'flex', gap: '12px', marginBottom: '20px' }}>
+                  <div style={{ flex: 1 }}>
+                    <label style={{ fontSize: '12px', color: '#9ca3af', marginBottom: '6px', display: 'block' }}>Filter by Area</label>
+                    <select
+                      value={selectedDWArea}
+                      onChange={(e) => setSelectedDWArea(e.target.value as Area | 'All Areas')}
                       style={{
-                        padding: '6px 12px',
-                        backgroundColor: chartView === 'areas' ? '#3b82f6' : '#2a2a2a',
-                        color: chartView === 'areas' ? 'white' : '#9ca3af',
-                        border: chartView === 'areas' ? 'none' : '1px solid #444',
-                        borderRadius: '6px',
-                        fontSize: '12px',
-                        cursor: 'pointer'
+                        width: '100%',
+                        padding: '10px',
+                        backgroundColor: '#1a1a1a',
+                        color: 'white',
+                        border: '1px solid #444',
+                        borderRadius: '8px',
+                        fontSize: '14px'
                       }}
                     >
-                      By Task Areas
-                    </button>
-                    <button
-                      onClick={() => setChartView('effort')}
+                      <option value="All Areas">All Areas</option>
+                      <option value="Full Stack">Full Stack</option>
+                      <option value="S4">S4</option>
+                      <option value="808">808</option>
+                      <option value="Personal">Personal</option>
+                      <option value="Huge Capital">Huge Capital</option>
+                      <option value="Golf">Golf</option>
+                      <option value="Health">Health</option>
+                    </select>
+                  </div>
+
+                  <div style={{ flex: 1 }}>
+                    <label style={{ fontSize: '12px', color: '#9ca3af', marginBottom: '6px', display: 'block' }}>Filter by Money Maker</label>
+                    <select
+                      value={selectedEffortLevel}
+                      onChange={(e) => setSelectedEffortLevel(e.target.value)}
                       style={{
-                        padding: '6px 12px',
-                        backgroundColor: chartView === 'effort' ? '#3b82f6' : '#2a2a2a',
-                        color: chartView === 'effort' ? 'white' : '#9ca3af',
-                        border: chartView === 'effort' ? 'none' : '1px solid #444',
-                        borderRadius: '6px',
-                        fontSize: '12px',
-                        cursor: 'pointer'
+                        width: '100%',
+                        padding: '10px',
+                        backgroundColor: '#1a1a1a',
+                        color: 'white',
+                        border: '1px solid #444',
+                        borderRadius: '8px',
+                        fontSize: '14px'
                       }}
                     >
-                      By Money Maker Level
-                    </button>
+                      <option value="All Levels">All Levels</option>
+                      <option value="$ Some Money">$ Some Money</option>
+                      <option value="$$ Big Money">$$ Big Money</option>
+                      <option value="$$$ Huge Money">$$$ Huge Money</option>
+                    </select>
                   </div>
                 </div>
 
-                {/* Date Range Selector */}
-                <div style={{ marginBottom: '16px', display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' }}>
-                  <span style={{ fontSize: '13px', color: '#9ca3af', fontWeight: '500' }}>Date Range:</span>
-                  <button
-                    onClick={() => {
-                      setChartDateRange('all')
-                      setShowCustomDatePicker(false)
-                    }}
-                    style={{
-                      padding: '6px 14px',
-                      backgroundColor: chartDateRange === 'all' ? '#3b82f6' : '#1a1a1a',
-                      color: chartDateRange === 'all' ? 'white' : '#9ca3af',
-                      border: '1px solid #444',
-                      borderRadius: '6px',
-                      fontSize: '12px',
-                      cursor: 'pointer',
-                      fontWeight: chartDateRange === 'all' ? '600' : '400'
-                    }}
-                  >
-                    All Dates
-                  </button>
-                  <button
-                    onClick={() => {
-                      setChartDateRange('monthly')
-                      setShowCustomDatePicker(false)
-                    }}
-                    style={{
-                      padding: '6px 14px',
-                      backgroundColor: chartDateRange === 'monthly' ? '#3b82f6' : '#1a1a1a',
-                      color: chartDateRange === 'monthly' ? 'white' : '#9ca3af',
-                      border: '1px solid #444',
-                      borderRadius: '6px',
-                      fontSize: '12px',
-                      cursor: 'pointer',
-                      fontWeight: chartDateRange === 'monthly' ? '600' : '400'
-                    }}
-                  >
-                    Monthly
-                  </button>
-                  <button
-                    onClick={() => {
-                      setChartDateRange('weekly')
-                      setShowCustomDatePicker(false)
-                    }}
-                    style={{
-                      padding: '6px 14px',
-                      backgroundColor: chartDateRange === 'weekly' ? '#3b82f6' : '#1a1a1a',
-                      color: chartDateRange === 'weekly' ? 'white' : '#9ca3af',
-                      border: '1px solid #444',
-                      borderRadius: '6px',
-                      fontSize: '12px',
-                      cursor: 'pointer',
-                      fontWeight: chartDateRange === 'weekly' ? '600' : '400'
-                    }}
-                  >
-                    Weekly
-                  </button>
-                  <button
-                    onClick={() => {
-                      setChartDateRange('custom')
-                      setShowCustomDatePicker(true)
-                    }}
-                    style={{
-                      padding: '6px 14px',
-                      backgroundColor: chartDateRange === 'custom' ? '#3b82f6' : '#1a1a1a',
-                      color: chartDateRange === 'custom' ? 'white' : '#9ca3af',
-                      border: '1px solid #444',
-                      borderRadius: '6px',
-                      fontSize: '12px',
-                      cursor: 'pointer',
-                      fontWeight: chartDateRange === 'custom' ? '600' : '400'
-                    }}
-                  >
-                    Custom
-                  </button>
-                </div>
-
-                {/* Custom Date Picker */}
-                {showCustomDatePicker && chartDateRange === 'custom' && (
-                  <div style={{
-                    marginBottom: '16px',
-                    padding: '16px',
-                    backgroundColor: '#1a1a1a',
-                    borderRadius: '8px',
-                    border: '1px solid #444'
-                  }}>
-                    <div style={{ display: 'flex', gap: '16px', alignItems: 'center' }}>
-                      <div style={{ flex: 1 }}>
-                        <label style={{ display: 'block', fontSize: '12px', color: '#9ca3af', marginBottom: '6px' }}>Start Date</label>
-                        <input
-                          type="date"
-                          value={customStartDate}
-                          onChange={(e) => setCustomStartDate(e.target.value)}
-                          style={{
-                            width: '100%',
-                            padding: '8px 12px',
-                            backgroundColor: '#2a2a2a',
-                            color: 'white',
-                            border: '1px solid #444',
-                            borderRadius: '6px',
-                            fontSize: '13px'
-                          }}
-                        />
-                      </div>
-                      <div style={{ flex: 1 }}>
-                        <label style={{ display: 'block', fontSize: '12px', color: '#9ca3af', marginBottom: '6px' }}>End Date</label>
-                        <input
-                          type="date"
-                          value={customEndDate}
-                          onChange={(e) => setCustomEndDate(e.target.value)}
-                          style={{
-                            width: '100%',
-                            padding: '8px 12px',
-                            backgroundColor: '#2a2a2a',
-                            color: 'white',
-                            border: '1px solid #444',
-                            borderRadius: '6px',
-                            fontSize: '13px'
-                          }}
-                        />
-                      </div>
-                    </div>
-                  </div>
-                )}
-
-                {/* Stacked Bar Chart by Date */}
-                <div style={{ padding: '20px 0' }}>
-                  {(() => {
-                    // Determine date range
-                    const now = new Date()
-                    let startDate: Date
-                    let endDate: Date = new Date(now)
-
-                    if (chartDateRange === 'weekly') {
-                      startDate = new Date(now)
-                      startDate.setDate(now.getDate() - 6) // Last 7 days including today
-                    } else if (chartDateRange === 'monthly') {
-                      startDate = new Date(now)
-                      startDate.setDate(now.getDate() - 29) // Last 30 days including today
-                    } else if (chartDateRange === 'custom' && customStartDate && customEndDate) {
-                      startDate = new Date(customStartDate)
-                      endDate = new Date(customEndDate)
-                    } else {
-                      // All dates - get earliest session date
-                      const allDates = filteredDWSessions.map(s => new Date(s.start_time))
-                      if (allDates.length > 0) {
-                        startDate = new Date(Math.min(...allDates.map(d => d.getTime())))
-                      } else {
-                        startDate = new Date(now)
-                        startDate.setDate(now.getDate() - 13)
-                      }
-                    }
-
-                    // Generate all dates in range
-                    const dates: string[] = []
-                    const currentDate = new Date(startDate)
-                    currentDate.setHours(0, 0, 0, 0)
-                    const end = new Date(endDate)
-                    end.setHours(0, 0, 0, 0)
-
-                    while (currentDate <= end) {
-                      dates.push(currentDate.toISOString().split('T')[0])
-                      currentDate.setDate(currentDate.getDate() + 1)
-                    }
-
-                    // Group sessions by date
-                    const sessionsByDate: { [key: string]: any[] } = {}
-                    filteredDWSessions.forEach(session => {
-                      const date = new Date(session.start_time).toISOString().split('T')[0]
-                      if (dates.includes(date)) {
-                        if (!sessionsByDate[date]) sessionsByDate[date] = []
-                        sessionsByDate[date].push(session)
-                      }
-                    })
-
-                    // Initialize all dates with empty arrays if no sessions
-                    dates.forEach(date => {
-                      if (!sessionsByDate[date]) {
-                        sessionsByDate[date] = []
-                      }
-                    })
-
-                    // Calculate max total hours for scaling
-                    const maxTotalHours = Math.max(...dates.map(date => {
-                      const dayTotal = sessionsByDate[date].reduce((sum, s) => sum + (s.duration_minutes || 0), 0) / 60
-                      return dayTotal
-                    }), 1)
-
-                    return (
-                      <div>
-                        {/* Chart Area */}
-                        <div style={{ display: 'flex', alignItems: 'flex-end', gap: '8px', height: '280px', padding: '10px 0' }}>
-                          {dates.map(date => {
-                            const daySessions = sessionsByDate[date]
-                            const dateLabel = new Date(date).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
-
-                            if (chartView === 'areas') {
-                              // Group by area
-                              const areaData: { [key: string]: number } = {}
-                              daySessions.forEach(s => {
-                                if (!areaData[s.area]) areaData[s.area] = 0
-                                areaData[s.area] += (s.duration_minutes || 0) / 60
-                              })
-
-                              const totalHours = Object.values(areaData).reduce((sum, h) => sum + h, 0)
-                              const barHeight = totalHours > 0 ? (totalHours / maxTotalHours) * 100 : 0
-
-                              return (
-                                <div key={date} style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '8px' }}>
-                                  <div style={{
-                                    width: '100%',
-                                    height: totalHours > 0 ? `${barHeight}%` : '10px',
-                                    display: 'flex',
-                                    flexDirection: 'column-reverse',
-                                    backgroundColor: '#1a1a1a',
-                                    borderRadius: '6px 6px 0 0',
-                                    overflow: 'hidden',
-                                    border: totalHours === 0 ? '1px dashed #444' : 'none'
-                                  }}>
-                                    {['Full Stack', 'S4', '808', 'Personal', 'Huge Capital', 'Golf', 'Health'].map(area => {
-                                      const hours = areaData[area] || 0
-                                      if (hours === 0) return null
-                                      const segmentHeight = (hours / totalHours) * 100
-                                      const areaColor = area === 'Personal' ? '#ec4899' :
-                                        area === 'Full Stack' ? '#10b981' :
-                                        area === 'Huge Capital' ? '#a855f7' :
-                                        area === '808' ? '#eab308' :
-                                        area === 'S4' ? '#3b82f6' :
-                                        area === 'Golf' ? '#f97316' :
-                                        area === 'Health' ? '#14b8a6' : '#9ca3af'
-
-                                      return (
-                                        <div
-                                          key={area}
-                                          style={{
-                                            height: `${segmentHeight}%`,
-                                            backgroundColor: areaColor,
-                                            transition: 'all 0.3s ease'
-                                          }}
-                                          title={`${area}: ${hours.toFixed(1)}h`}
-                                        />
-                                      )
-                                    })}
-                                  </div>
-                                  <div style={{ fontSize: '11px', color: '#9ca3af', textAlign: 'center' }}>{dateLabel}</div>
-                                </div>
-                              )
-                            } else {
-                              // Group by effort level
-                              const effortData: { [key: string]: number } = {}
-                              daySessions.forEach(s => {
-                                const level = s.effort_level || 'No Level'
-                                if (!effortData[level]) effortData[level] = 0
-                                effortData[level] += (s.duration_minutes || 0) / 60
-                              })
-
-                              const totalHours = Object.values(effortData).reduce((sum, h) => sum + h, 0)
-                              const barHeight = totalHours > 0 ? (totalHours / maxTotalHours) * 100 : 0
-
-                              return (
-                                <div key={date} style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '8px' }}>
-                                  <div style={{
-                                    width: '100%',
-                                    height: totalHours > 0 ? `${barHeight}%` : '10px',
-                                    display: 'flex',
-                                    flexDirection: 'column-reverse',
-                                    backgroundColor: '#1a1a1a',
-                                    borderRadius: '6px 6px 0 0',
-                                    overflow: 'hidden',
-                                    border: totalHours === 0 ? '1px dashed #444' : 'none'
-                                  }}>
-                                    {['$$$ MoneyMaker', '$ Lil Money', '-$ Save Dat Money', ':( Pointless', '8) JusVibin', 'No Level'].map(level => {
-                                      const hours = effortData[level] || 0
-                                      if (hours === 0) return null
-                                      const segmentHeight = (hours / totalHours) * 100
-                                      const effortColor = level === '$$$ MoneyMaker' ? '#10b981' :
-                                        level === '$ Lil Money' ? '#3b82f6' :
-                                        level === '-$ Save Dat Money' ? '#f97316' :
-                                        level === ':( Pointless' ? '#ef4444' :
-                                        level === '8) JusVibin' ? '#a855f7' : '#6b7280'
-
-                                      return (
-                                        <div
-                                          key={level}
-                                          style={{
-                                            height: `${segmentHeight}%`,
-                                            backgroundColor: effortColor,
-                                            transition: 'all 0.3s ease'
-                                          }}
-                                          title={`${level}: ${hours.toFixed(1)}h`}
-                                        />
-                                      )
-                                    })}
-                                  </div>
-                                  <div style={{ fontSize: '11px', color: '#9ca3af', textAlign: 'center' }}>{dateLabel}</div>
-                                </div>
-                              )
-                            }
-                          })}
-                        </div>
-
-                        {/* Legend */}
-                        <div style={{ marginTop: '20px', display: 'flex', gap: '16px', flexWrap: 'wrap', justifyContent: 'center' }}>
-                          {chartView === 'areas' ? (
-                            ['Full Stack', 'S4', '808', 'Personal', 'Huge Capital', 'Golf', 'Health'].map(area => {
-                              const areaColor = area === 'Personal' ? '#ec4899' :
-                                area === 'Full Stack' ? '#10b981' :
-                                area === 'Huge Capital' ? '#a855f7' :
-                                area === '808' ? '#eab308' :
-                                area === 'S4' ? '#3b82f6' :
-                                area === 'Golf' ? '#f97316' :
-                                area === 'Health' ? '#14b8a6' : '#9ca3af'
-
-                              return (
-                                <div key={area} style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                                  <div style={{ width: '12px', height: '12px', backgroundColor: areaColor, borderRadius: '3px' }} />
-                                  <span style={{ fontSize: '12px', color: '#9ca3af' }}>{area}</span>
-                                </div>
-                              )
-                            })
-                          ) : (
-                            ['$$$ MoneyMaker', '$ Lil Money', '-$ Save Dat Money', ':( Pointless', '8) JusVibin', 'No Level'].map(level => {
-                              const effortColor = level === '$$$ MoneyMaker' ? '#10b981' :
-                                level === '$ Lil Money' ? '#3b82f6' :
-                                level === '-$ Save Dat Money' ? '#f97316' :
-                                level === ':( Pointless' ? '#ef4444' :
-                                level === '8) JusVibin' ? '#a855f7' : '#6b7280'
-
-                              return (
-                                <div key={level} style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                                  <div style={{ width: '12px', height: '12px', backgroundColor: effortColor, borderRadius: '3px' }} />
-                                  <span style={{ fontSize: '12px', color: '#9ca3af' }}>{level}</span>
-                                </div>
-                              )
-                            })
-                          )}
-                        </div>
-                      </div>
-                    )
-                  })()}
-                </div>
-              </div>
-
-              {/* Hours Summary Table */}
-              <div style={{ backgroundColor: '#2a2a2a', padding: '24px', borderRadius: '12px' }}>
-                <h3 style={{ fontSize: '18px', fontWeight: 'bold', marginBottom: '16px' }}>Hours Summary</h3>
-                <table style={{ width: '100%', fontSize: '12px' }}>
+                {/* Summary Table */}
+                <table style={{ width: '100%', borderCollapse: 'collapse' }}>
                   <thead>
-                    <tr style={{ borderBottom: '1px solid #444' }}>
-                      <th style={{ textAlign: 'left', padding: '8px 0', color: '#9ca3af' }}>Area</th>
-                      <th style={{ textAlign: 'right', padding: '8px 0', color: '#9ca3af' }}>Today</th>
-                      <th style={{ textAlign: 'right', padding: '8px 0', color: '#9ca3af' }}>Week</th>
-                      <th style={{ textAlign: 'right', padding: '8px 0', color: '#9ca3af' }}>Month</th>
-                      <th style={{ textAlign: 'right', padding: '8px 0', color: '#9ca3af' }}>All Time</th>
+                    <tr style={{ borderBottom: '2px solid #444' }}>
+                      <th style={{ textAlign: 'left', padding: '12px', color: '#9ca3af', fontSize: '14px', fontWeight: '600' }}>Area</th>
+                      <th style={{ textAlign: 'right', padding: '12px', color: '#9ca3af', fontSize: '14px', fontWeight: '600' }}>Today</th>
+                      <th style={{ textAlign: 'right', padding: '12px', color: '#9ca3af', fontSize: '14px', fontWeight: '600' }}>This Week</th>
+                      <th style={{ textAlign: 'right', padding: '12px', color: '#9ca3af', fontSize: '14px', fontWeight: '600' }}>This Month</th>
+                      <th style={{ textAlign: 'right', padding: '12px', color: '#9ca3af', fontSize: '14px', fontWeight: '600' }}>All Time</th>
                     </tr>
                   </thead>
                   <tbody>
-                    {hoursSummary.map((row) => (
-                      <tr key={row.area} style={{ borderBottom: '1px solid #333' }}>
-                        <td style={{ padding: '12px 0' }}>
-                          <span style={{ color: row.color, fontWeight: '500' }}>{row.area}</span>
-                        </td>
-                        <td style={{ textAlign: 'right', padding: '12px 0' }}>{row.today}</td>
-                        <td style={{ textAlign: 'right', padding: '12px 0' }}>{row.week}</td>
-                        <td style={{ textAlign: 'right', padding: '12px 0' }}>{row.month}</td>
-                        <td style={{ textAlign: 'right', padding: '12px 0', fontWeight: 'bold' }}>{row.allTime}</td>
-                      </tr>
-                    ))}
-                    <tr style={{ borderTop: '2px solid #444', fontWeight: 'bold' }}>
-                      <td style={{ padding: '12px 0' }}>Total</td>
-                      <td style={{ textAlign: 'right', padding: '12px 0' }}>{getHoursByPeriod('All', 'today')}</td>
-                      <td style={{ textAlign: 'right', padding: '12px 0' }}>{getHoursByPeriod('All', 'week')}</td>
-                      <td style={{ textAlign: 'right', padding: '12px 0' }}>{getHoursByPeriod('All', 'month')}</td>
-                      <td style={{ textAlign: 'right', padding: '12px 0' }}>{getHoursByPeriod('All', 'all')}</td>
-                    </tr>
+                    {(() => {
+                      // Calculate hours for each area
+                      const areas: Area[] = ['Full Stack', 'S4', '808', 'Personal', 'Huge Capital', 'Golf', 'Health']
+
+                      const calculateHours = (area: Area | 'All', period: 'today' | 'week' | 'month' | 'all') => {
+                        const now = new Date()
+                        let startDate: Date
+
+                        if (period === 'today') {
+                          startDate = new Date(now.getFullYear(), now.getMonth(), now.getDate())
+                        } else if (period === 'week') {
+                          startDate = new Date(now)
+                          startDate.setDate(now.getDate() - now.getDay())
+                          startDate.setHours(0, 0, 0, 0)
+                        } else if (period === 'month') {
+                          startDate = new Date(now.getFullYear(), now.getMonth(), 1)
+                        } else {
+                          startDate = new Date(0)
+                        }
+
+                        let filteredSessions = deepWorkSessions.filter(s => {
+                          const sessionDate = new Date(s.start_time)
+                          if (sessionDate < startDate) return false
+                          if (selectedDWArea !== 'All Areas' && s.area !== selectedDWArea) return false
+                          return area === 'All' || s.area === area
+                        })
+
+                        const totalMinutes = filteredSessions.reduce((sum, s) => sum + (s.duration_minutes || 0), 0)
+                        return (totalMinutes / 60).toFixed(1)
+                      }
+
+                      const displayAreas = selectedDWArea === 'All Areas' ? areas : areas.filter(a => a === selectedDWArea)
+
+                      return (
+                        <>
+                          {displayAreas.map(area => (
+                            <tr key={area} style={{ borderBottom: '1px solid #333' }}>
+                              <td style={{ padding: '12px', color: getAreaColor(area), fontWeight: '600' }}>{area}</td>
+                              <td style={{ textAlign: 'right', padding: '12px', color: '#e5e7eb' }}>{calculateHours(area, 'today')}h</td>
+                              <td style={{ textAlign: 'right', padding: '12px', color: '#e5e7eb' }}>{calculateHours(area, 'week')}h</td>
+                              <td style={{ textAlign: 'right', padding: '12px', color: '#e5e7eb' }}>{calculateHours(area, 'month')}h</td>
+                              <td style={{ textAlign: 'right', padding: '12px', color: '#e5e7eb', fontWeight: 'bold' }}>{calculateHours(area, 'all')}h</td>
+                            </tr>
+                          ))}
+                          <tr style={{ borderTop: '2px solid #444', fontWeight: 'bold' }}>
+                            <td style={{ padding: '12px', color: '#fff' }}>Total</td>
+                            <td style={{ textAlign: 'right', padding: '12px', color: '#fff' }}>{calculateHours('All', 'today')}h</td>
+                            <td style={{ textAlign: 'right', padding: '12px', color: '#fff' }}>{calculateHours('All', 'week')}h</td>
+                            <td style={{ textAlign: 'right', padding: '12px', color: '#fff' }}>{calculateHours('All', 'month')}h</td>
+                            <td style={{ textAlign: 'right', padding: '12px', color: '#fbbf24', fontSize: '16px' }}>{calculateHours('All', 'all')}h</td>
+                          </tr>
+                        </>
+                      )
+                    })()}
                   </tbody>
                 </table>
               </div>
-            </div>
 
-            {/* Deep Work Session Log */}
             <div style={{ backgroundColor: '#2a2a2a', padding: '24px', borderRadius: '12px' }}>
+              {/* Deep Work Session Log */}
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
                 <h3 style={{ fontSize: '18px', fontWeight: 'bold' }}>Deep Work Session Log</h3>
                 <button style={{
@@ -2165,16 +2801,23 @@ function App() {
                       ? `${startTime.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })} - ${endTime.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })}`
                       : startTime.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })
 
+                    // Calculate actual duration from start and end times
+                    const actualDurationMinutes = endTime
+                      ? Math.floor((endTime.getTime() - startTime.getTime()) / (1000 * 60))
+                      : sessionItem.duration_minutes || 0
+
                     return (
                       <div
                         key={idx}
+                        onDoubleClick={() => startEditingSession(sessionItem)}
                         style={{
                           backgroundColor: getAreaColor(sessionItem.area as Area),
                           padding: '16px',
                           borderRadius: '8px',
                           display: 'flex',
                           alignItems: 'center',
-                          gap: '16px'
+                          gap: '16px',
+                          cursor: 'pointer'
                         }}
                       >
                         <div style={{ flex: '0 0 120px' }}>
@@ -2184,13 +2827,31 @@ function App() {
                           <div style={{ fontSize: '13px', opacity: 0.9 }}>🕐 {timeStr}</div>
                         </div>
                         <div style={{ flex: '0 0 80px' }}>
-                          <div style={{ fontSize: '13px', fontWeight: 'bold' }}>⏱️ {formatHoursMinutes(sessionItem.duration_minutes || 0)}</div>
+                          <div style={{ fontSize: '13px', fontWeight: 'bold' }}>⏱️ {formatHoursMinutes(actualDurationMinutes)}</div>
                         </div>
-                        <div style={{ flex: '0 0 100px' }}>
-                          <span style={{ backgroundColor: 'rgba(0,0,0,0.3)', padding: '4px 10px', borderRadius: '4px', fontSize: '12px' }}>{sessionItem.area}</span>
+                        <div style={{ flex: '0 0 140px' }}>
+                          <span style={{
+                            backgroundColor: getAreaColor(sessionItem.area as Area),
+                            color: 'white',
+                            padding: '4px 12px',
+                            borderRadius: '12px',
+                            fontSize: '12px',
+                            fontWeight: '500',
+                            display: 'inline-block',
+                            whiteSpace: 'nowrap'
+                          }}>{sessionItem.area}</span>
                         </div>
-                        <div style={{ flex: '0 0 120px' }}>
-                          <span style={{ backgroundColor: 'rgba(0,0,0,0.2)', padding: '4px 10px', borderRadius: '4px', fontSize: '12px' }}>{sessionItem.task_type || 'N/A'}</span>
+                        <div style={{ flex: '0 0 140px' }}>
+                          <span style={{
+                            backgroundColor: '#f59e0b',
+                            color: 'white',
+                            padding: '4px 12px',
+                            borderRadius: '12px',
+                            fontSize: '12px',
+                            fontWeight: '500',
+                            display: 'inline-block',
+                            whiteSpace: 'nowrap'
+                          }}>{sessionItem.task_type || 'N/A'}</span>
                         </div>
                         <div style={{ flex: '0 0 200px' }}>
                           <span style={{ backgroundColor: 'rgba(255,255,255,0.9)', color: '#000', padding: '4px 10px', borderRadius: '4px', fontSize: '12px', fontWeight: '500' }}>
@@ -2201,26 +2862,13 @@ function App() {
                           <span style={{ backgroundColor: 'rgba(0,0,0,0.2)', padding: '4px 10px', borderRadius: '4px', fontSize: '12px' }}>{sessionItem.effort_level || 'N/A'}</span>
                         </div>
                         <div style={{ fontSize: '13px', opacity: 0.7, fontStyle: 'italic' }}>{sessionItem.notes || 'No notes'}</div>
-                        <button
-                          onClick={() => startEditingSession(sessionItem)}
-                          style={{
-                            backgroundColor: 'transparent',
-                            border: 'none',
-                            color: 'white',
-                            cursor: 'pointer',
-                            opacity: 0.7,
-                            fontSize: '16px'
-                          }}
-                        >
-                          ✏️
-                        </button>
                       </div>
                     )
                   })
                 )}
               </div>
             </div>
-          </div>
+          </>
         )}
       </div>
     </div>
@@ -2340,9 +2988,9 @@ function App() {
                 </label>
                 <input
                   type="text"
-                  value={editFormData.task_id || ''}
+                  value={editFormData.task_name || ''}
                   placeholder="Task name..."
-                  onChange={(e) => setEditFormData({ ...editFormData, task_id: e.target.value })}
+                  onChange={(e) => setEditFormData({ ...editFormData, task_name: e.target.value })}
                   style={{
                     width: '100%',
                     padding: '10px 12px',
